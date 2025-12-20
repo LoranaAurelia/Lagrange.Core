@@ -16,10 +16,12 @@ WORKDIR /app/data
 COPY --from=build-env /root/out /app/bin
 COPY Lagrange.OneBot/Resources/docker-entrypoint.sh /app/bin/docker-entrypoint.sh
 
-ENV RUNNING_IN_DOCKER=true
+# Environment variables for configuration
+# ONEBOT_DISABLE_REALM: Set to "true" or "1" to disable Realm database (no-database mode)
+# LAGRANGE_WORKDIR: Custom working directory (optional, uses current dir if not set)
+ENV RUNNING_IN_DOCKER=true \
+    ONEBOT_DISABLE_REALM=true
 
-RUN apt-get update \
- && apt-get -y --no-install-recommends install gosu \
- && chmod +x /app/bin/docker-entrypoint.sh
+RUN chmod +x /app/bin/docker-entrypoint.sh
 
 ENTRYPOINT ["/app/bin/docker-entrypoint.sh"]
