@@ -21,8 +21,8 @@ public class BotDeviceInfo
     {
         Guid = Guid.NewGuid(),
         MacAddress = ByteGen.GenRandomBytes(6),
-        DeviceName = $"Lagrange-{StringGen.GenerateHex(6).ToUpper()}",
-        SystemKernel = "Windows 10.0.19042",
-        KernelVersion = "10.0.19042.0"
+        DeviceName = "ThinkPad T14 Gen 3",
+        SystemKernel = "Linux 6.8.0-60-generic",
+        KernelVersion = "6.8.0-60-generic"
     };
 }

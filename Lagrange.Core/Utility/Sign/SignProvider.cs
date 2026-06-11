@@ -4,6 +4,10 @@ public abstract class SignProvider
 {
     protected bool Available = true;
 
+    public virtual bool UseNativeBodyForOnline => false;
+
+    public virtual bool StrictNativeTier => false;
+
     protected static readonly string[] WhiteListCommand =
     {
         "trpc.o3.ecdh_access.EcdhAccess.SsoEstablishShareKey",
@@ -43,8 +47,85 @@ public abstract class SignProvider
         "OidbSvcTrpcTcp.0xf55_1",
         "OidbSvcTrpcTcp.0xf67_1",
         "OidbSvcTrpcTcp.0xf67_5",
-        "OidbSvcTrpcTcp.0x6d9_4"
+        "OidbSvcTrpcTcp.0x6d9_4",
+        "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync",
+        "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat",
+        "trpc.qq_new_tech.status_svc.StatusService.Register"
     };
 
     public abstract byte[]? Sign(string cmd, uint seq, byte[] body, out byte[]? ver, out string? token);
+
+    public virtual SignResult SignPacket(SignRequestContext context)
+    {
+        var sign = Sign(context.Command, context.Sequence, context.Body, out var extra, out var token);
+        return new SignResult
+        {
+            Sign = sign,
+            Extra = extra,
+            Token = token
+        };
+    }
+
+    public virtual void PushState(SignStatePushContext context) { }
+
+    public static bool IsRoutedOnlineCommand(string command) => command is
+        "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync" or
+        "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat" or
+        "trpc.qq_new_tech.status_svc.StatusService.Register";
+}
+
+public sealed class SignRequestContext
+{
+    public string Command { get; init; } = "";
+
+    public uint Sequence { get; init; }
+
+    public byte[] Body { get; init; } = Array.Empty<byte>();
+
+    public Lagrange.Core.Common.BotAppInfo AppInfo { get; init; } = null!;
+
+    public Lagrange.Core.Common.BotDeviceInfo DeviceInfo { get; init; } = null!;
+
+    public Lagrange.Core.Common.BotKeystore Keystore { get; init; } = null!;
+}
+
+public sealed class SignResult
+{
+    public byte[]? Sign { get; init; }
+
+    public byte[]? Extra { get; init; }
+
+    public string? Token { get; init; }
+
+    public byte[]? NativeBody { get; init; }
+
+    public string? NativeTier { get; init; }
+
+    public IReadOnlyList<SignStateUpdate> StateUpdates { get; init; } = Array.Empty<SignStateUpdate>();
+
+    public string? Diagnostic { get; init; }
+}
+
+public sealed class SignStateUpdate
+{
+    public string? Kind { get; init; }
+
+    public int? Len { get; init; }
+
+    public string? Sha256_16 { get; init; }
+}
+
+public sealed class SignStatePushContext
+{
+    public string Command { get; init; } = "";
+
+    public uint Sequence { get; init; }
+
+    public byte[] Payload { get; init; } = Array.Empty<byte>();
+
+    public byte[] ReserveField { get; init; } = Array.Empty<byte>();
+
+    public object? ReserveFields { get; init; }
+
+    public Lagrange.Core.Common.BotKeystore Keystore { get; init; } = null!;
 }

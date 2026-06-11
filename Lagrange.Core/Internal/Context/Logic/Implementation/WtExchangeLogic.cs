@@ -447,6 +447,16 @@ internal class WtExchangeLogic : LogicBase
             bool result = resp.Message.Contains("register success");
             if (result)
             {
+                if (Collection.Config.EnableStatusRegister)
+                {
+                    var statusRegisterResponse = await Collection.Business.SendEvent(StatusRegisterEvent.Create());
+                    if (statusRegisterResponse.Count != 0)
+                    {
+                        var status = (StatusRegisterEvent)statusRegisterResponse[0];
+                        Collection.Log.LogInfo(Tag, $"Status Register: {status.Message}");
+                    }
+                }
+
                 Collection.Scheduler.Interval(SsoHeartbeatEvent, (int)(4.5 * 60 * 1000), heartbeatDelegate);
 
                 var onlineEvent = new BotOnlineEvent(reason);

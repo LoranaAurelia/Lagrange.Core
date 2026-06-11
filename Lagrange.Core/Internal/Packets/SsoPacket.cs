@@ -1,5 +1,7 @@
 namespace Lagrange.Core.Internal.Packets;
 
+using Lagrange.Core.Internal.Packets.System;
+
 internal class SsoPacket
 {
     public byte PacketType { get; set; }
@@ -13,6 +15,10 @@ internal class SsoPacket
     public int RetCode { get; }
     
     public string? Extra { get; }
+
+    public byte[] ReserveField { get; init; } = Array.Empty<byte>();
+
+    public SsoReserveFields? ReserveFields { get; init; }
     
     public SsoPacket(byte packetType, string command, uint sequence, byte[] payload)
     {

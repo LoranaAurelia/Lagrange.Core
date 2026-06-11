@@ -89,6 +89,15 @@ internal class PacketContext : ContextBase
         if (service.Length == 0) return;
 
         var sso = SsoPacker.Parse(service);
+        SignProvider.PushState(new SignStatePushContext
+        {
+            Command = sso.Command,
+            Sequence = sso.Sequence,
+            Payload = sso.Payload,
+            ReserveField = sso.ReserveField,
+            ReserveFields = sso.ReserveFields,
+            Keystore = Keystore
+        });
         
         if (_pendingTasks.TryRemove(sso.Sequence, out var task))
         {

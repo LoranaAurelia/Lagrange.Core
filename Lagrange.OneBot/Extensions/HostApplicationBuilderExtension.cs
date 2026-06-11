@@ -23,6 +23,7 @@ public static class HostApplicationBuilderExtension
     public static HostApplicationBuilder ConfigureLagrangeCore(this HostApplicationBuilder builder)
     {
         builder.Services
+            .AddSingleton<SignServerProfileStore>()
             .AddSingleton<OneBotSigner>() // Signer
             .AddSingleton((services) => // BotConfig
             {
@@ -40,6 +41,7 @@ public static class HostApplicationBuilderExtension
                     UseIPv6Network = configuration.GetValue("Account:UseIPv6Network", false),
                     GetOptimumServer = configuration.GetValue("Account:GetOptimumServer", true),
                     AutoReLogin = configuration.GetValue("Account:AutoReLogin", true),
+                    EnableStatusRegister = configuration.GetValue("SignServer:EnableStatusRegister", false),
                     CustomSignProvider = services.GetRequiredService<OneBotSigner>()
                 };
             })
@@ -51,6 +53,10 @@ public static class HostApplicationBuilderExtension
                 var device = File.Exists(path)
                     ? JsonSerializer.Deserialize<BotDeviceInfo>(File.ReadAllText(path)) ?? BotDeviceInfo.GenerateInfo()
                     : BotDeviceInfo.GenerateInfo();
+                if (configuration.GetValue("SignServer:UseSyntheticProfile", true))
+                {
+                    device = services.GetRequiredService<SignServerProfileStore>().BuildDeviceInfo(device);
+                }
 
                 string deviceJson = JsonSerializer.Serialize(device);
                 File.WriteAllText(path, deviceJson);

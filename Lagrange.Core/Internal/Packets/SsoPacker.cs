@@ -18,14 +18,27 @@ internal static class SsoPacker
     {
         var writer = new BinaryPacket();
 
-        var sign = signProvider.Sign(packet.Command, packet.Sequence, packet.Payload.ToArray(), out var extra, out var token);
+        var signResult = signProvider.SignPacket(new SignRequestContext
+        {
+            Command = packet.Command,
+            Sequence = packet.Sequence,
+            Body = packet.Payload.ToArray(),
+            AppInfo = appInfo,
+            DeviceInfo = device,
+            Keystore = keystore
+        });
+        var payload = signProvider.UseNativeBodyForOnline &&
+                      SignProvider.IsRoutedOnlineCommand(packet.Command) &&
+                      signResult.NativeBody is { Length: > 0 }
+            ? signResult.NativeBody
+            : packet.Payload;
         var signature = new SsoReserveFields
         {
-            SecInfo = sign == null ? null : new SsoSecureInfo
+            SecInfo = signResult.Sign == null ? null : new SsoSecureInfo
             {
-                SecSign = sign,
-                SecToken = token,
-                SecExtra = extra
+                SecSign = signResult.Sign,
+                SecToken = signResult.Token,
+                SecExtra = signResult.Extra
             },
             TraceParent = StringGen.GenerateTrace(),
             Uid = keystore.Uid
@@ -46,7 +59,7 @@ internal static class SsoPacker
             .WriteString(appInfo.CurrentVersion, Prefix.Uint16 | Prefix.WithPrefix) // Actually at wtlogin.trans_emp, this string is empty and only prefix 00 02 is given, but we can just simply ignore that situation
             .WriteBytes(stream.ToArray(), Prefix.Uint32 | Prefix.WithPrefix), Prefix.Uint32 | Prefix.WithPrefix); // packet end
         
-        return writer.WriteBytes(packet.Payload.ToArray(), Prefix.Uint32 | Prefix.WithPrefix);
+        return writer.WriteBytes(payload, Prefix.Uint32 | Prefix.WithPrefix);
     }
 
     /// <summary>
@@ -64,6 +77,19 @@ internal static class SsoPacker
         var msgCookie = headReader.ReadBytes(Prefix.Uint32 | Prefix.WithPrefix);
         int isCompressed = headReader.ReadInt();
         var reserveField = headReader.ReadBytes(Prefix.Uint32 | Prefix.WithPrefix);
+        SsoReserveFields? reserve = null;
+        if (reserveField.Length != 0)
+        {
+            try
+            {
+                using var reserveStream = new MemoryStream(reserveField);
+                reserve = Serializer.Deserialize<SsoReserveFields>(reserveStream);
+            }
+            catch
+            {
+                reserve = null;
+            }
+        }
 
         var body = packet.ReadBytes(Prefix.Uint32 | Prefix.WithPrefix);
         var raw = isCompressed switch
@@ -74,7 +100,15 @@ internal static class SsoPacker
         };
         
         return retCode == 0 
-            ? new SsoPacket(12, command, sequence, raw) 
-            : new SsoPacket(12, command, sequence, retCode, extra);
+            ? new SsoPacket(12, command, sequence, raw)
+            {
+                ReserveField = reserveField,
+                ReserveFields = reserve
+            }
+            : new SsoPacket(12, command, sequence, retCode, extra)
+            {
+                ReserveField = reserveField,
+                ReserveFields = reserve
+            };
     }
 }
