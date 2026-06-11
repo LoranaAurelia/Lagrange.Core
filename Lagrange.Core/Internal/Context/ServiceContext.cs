@@ -4,6 +4,7 @@ using Lagrange.Core.Common;
 using Lagrange.Core.Internal.Event;
 using Lagrange.Core.Internal.Packets;
 using Lagrange.Core.Internal.Service;
+using Lagrange.Core.Utility.Diagnostics;
 using Lagrange.Core.Utility.Extension;
 
 namespace Lagrange.Core.Internal.Context;
@@ -96,6 +97,7 @@ internal class ServiceContext : ContextBase
         {
             Collection.Log.LogInfo(Tag, $"Unsupported SSOFrame Received: {packet.Command}");
             Collection.Log.LogDebug(Tag, $"Unsuccessful SSOFrame Payload: {packet.Payload.Hex()}");
+            PacketDumpWriter.DumpUnsupportedSsoPacket(Collection.Config, packet);
             return result; // 没找到 滚蛋吧
         }
 

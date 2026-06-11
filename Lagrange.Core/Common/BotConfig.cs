@@ -39,6 +39,16 @@ public class BotConfig
     public bool EnableStatusRegister { get; set; } = false;
 
     /// <summary>
+    /// Write runtime diagnostics and selected packet dumps to files.
+    /// </summary>
+    public bool EnableFileLogging { get; set; } = false;
+
+    /// <summary>
+    /// Directory for runtime diagnostics and selected packet dumps.
+    /// </summary>
+    public string LogDirectory { get; set; } = "logs";
+
+    /// <summary>
     /// The maximum size of the highway block in byte, max 1MB (1024 * 1024 byte)
     /// </summary>
     public uint HighwayChunkSize { get; set; } = 1024 * 1024;

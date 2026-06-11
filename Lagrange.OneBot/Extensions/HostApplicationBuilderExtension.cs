@@ -22,6 +22,12 @@ public static class HostApplicationBuilderExtension
 {
     public static HostApplicationBuilder ConfigureLagrangeCore(this HostApplicationBuilder builder)
     {
+        if (builder.Configuration.GetValue("Diagnostics:EnableFileLogging", false))
+        {
+            builder.Logging.AddProvider(new DiagnosticFileLoggerProvider(
+                builder.Configuration["Diagnostics:LogDirectory"] ?? "logs"));
+        }
+
         builder.Services
             .AddSingleton<SignServerProfileStore>()
             .AddSingleton<OneBotSigner>() // Signer
@@ -42,6 +48,8 @@ public static class HostApplicationBuilderExtension
                     GetOptimumServer = configuration.GetValue("Account:GetOptimumServer", true),
                     AutoReLogin = configuration.GetValue("Account:AutoReLogin", true),
                     EnableStatusRegister = configuration.GetValue("SignServer:EnableStatusRegister", false),
+                    EnableFileLogging = configuration.GetValue("Diagnostics:EnableFileLogging", false),
+                    LogDirectory = configuration["Diagnostics:LogDirectory"] ?? "logs",
                     CustomSignProvider = services.GetRequiredService<OneBotSigner>()
                 };
             })
