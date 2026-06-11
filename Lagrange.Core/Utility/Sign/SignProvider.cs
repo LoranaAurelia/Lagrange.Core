@@ -72,6 +72,18 @@ public abstract class SignProvider
         "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync" or
         "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat" or
         "trpc.qq_new_tech.status_svc.StatusService.Register";
+
+    public static bool CanReplaceWithNativeBody(string command, byte[]? nativeBody)
+    {
+        if (nativeBody == null) return false;
+
+        return command switch
+        {
+            "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync" => nativeBody.Length >= 72,
+            "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat" => nativeBody.Length >= 105,
+            _ => false
+        };
+    }
 }
 
 public sealed class SignRequestContext

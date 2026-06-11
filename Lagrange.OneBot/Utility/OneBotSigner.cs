@@ -115,7 +115,7 @@ public class OneBotSigner : SignProvider
         {
             var routed = SendSignRequest(context.Command, context.Sequence, context.Body, context, false, route);
             LogSignResult(context.Command, context.Sequence, routed);
-            EnforceTier(context.Command, routed.NativeTier);
+            EnforceNativeResult(context.Command, routed);
             return routed;
         }
         catch (Exception e) when (!StrictNativeTier)
@@ -352,8 +352,18 @@ public class OneBotSigner : SignProvider
             result.Extra?.Length ?? 0);
     }
 
-    private void EnforceTier(string command, string? nativeTier)
+    private void EnforceNativeResult(string command, SignResult result)
     {
+        if (SignProvider.IsRoutedOnlineCommand(command) &&
+            result.NativeBody is { Length: > 0 } &&
+            !SignProvider.CanReplaceWithNativeBody(command, result.NativeBody))
+        {
+            _logger.LogWarning(
+                "SignServer native_body ignored for {Command}: native_body_len={NativeBodyLen}",
+                command,
+                result.NativeBody.Length);
+        }
+
         if (!StrictNativeTier) return;
 
         string? expected = command switch
@@ -365,9 +375,15 @@ public class OneBotSigner : SignProvider
             _ => null
         };
 
-        if (expected != null && nativeTier != expected)
+        if (expected != null && result.NativeTier != expected)
         {
-            throw new InvalidOperationException($"Unexpected SignServer native_tier for {command}: {nativeTier}, expected {expected}");
+            throw new InvalidOperationException($"Unexpected SignServer native_tier for {command}: {result.NativeTier}, expected {expected}");
+        }
+
+        if (SignProvider.IsRoutedOnlineCommand(command) && !SignProvider.CanReplaceWithNativeBody(command, result.NativeBody))
+        {
+            throw new InvalidOperationException(
+                $"Unexpected SignServer native_body length for {command}: {result.NativeBody?.Length ?? 0}");
         }
     }
 
