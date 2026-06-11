@@ -29,7 +29,7 @@ internal static class SsoPacker
         });
         var payload = signProvider.UseNativeBodyForOnline &&
                       SignProvider.IsRoutedOnlineCommand(packet.Command) &&
-                      SignProvider.CanReplaceWithNativeBody(packet.Command, signResult.NativeBody)
+                      signResult.NativeBody is { Length: > 0 }
             ? signResult.NativeBody
             : packet.Payload;
         var signature = new SsoReserveFields
