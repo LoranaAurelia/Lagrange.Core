@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Lagrange.Core.Common;
 using Microsoft.Extensions.Configuration;
@@ -17,7 +18,7 @@ public sealed class SignServerProfileStore
 
     private SignServerProfile? _profile;
 
-    private string ProfilePath => _configuration["ConfigPath:SignServerProfile"] ?? "signserver-profile.json";
+    private string DevicePath => _configuration["ConfigPath:DeviceInfo"] ?? "device.json";
 
     public SignServerProfileStore(IConfiguration configuration, ILogger<SignServerProfileStore> logger)
     {
@@ -25,63 +26,244 @@ public sealed class SignServerProfileStore
         _logger = logger;
     }
 
-    public SignServerProfile GetProfile(string wrapperVersion = "49738")
+    public SignServerProfile GetProfile(string wrapperVersion = "49738", BotDeviceInfo? existing = null)
     {
         lock (_lock)
         {
             if (_profile != null) return _profile;
 
-            if (File.Exists(ProfilePath))
+            if (File.Exists(DevicePath))
             {
                 try
                 {
-                    _profile = JsonSerializer.Deserialize<SignServerProfile>(File.ReadAllText(ProfilePath));
+                    var root = JsonNode.Parse(File.ReadAllText(DevicePath))?.AsObject();
+                    if (root?["sign_server_profile"] is JsonNode profileNode)
+                    {
+                        _profile = profileNode.Deserialize<SignServerProfile>();
+                    }
                 }
                 catch (Exception e)
                 {
-                    _logger.LogWarning(e, "Failed to read SignServer synthetic profile, generating a new one");
+                    _logger.LogWarning(e, "Failed to read SignServer synthetic profile from device file, generating a new one");
                 }
             }
 
-            _profile ??= SignServerProfile.Create(wrapperVersion);
-            Save(_profile);
+            existing ??= ReadDeviceInfo();
+            _profile ??= SignServerProfile.Create(wrapperVersion, existing);
+            Save(_profile, existing);
             return _profile;
         }
     }
 
     public BotDeviceInfo BuildDeviceInfo(BotDeviceInfo? existing = null)
     {
-        var profile = GetProfile();
+        var profile = GetProfile(existing: existing);
         var identity = profile.Identity;
         var environment = profile.Environment;
 
-        return new BotDeviceInfo
+        if (!Guid.TryParse(identity.Guid, out var guid))
         {
-            Guid = Guid.Parse(identity.Guid),
-            MacAddress = ParseMac(identity.MacAddress),
+            guid = existing?.Guid ?? Guid.NewGuid();
+            identity.Guid = guid.ToString();
+        }
+
+        var macAddress = TryParseMac(identity.MacAddress) ?? existing?.MacAddress ?? RandomNumberGenerator.GetBytes(6);
+        identity.MacAddress = FormatMac(macAddress);
+
+        var device = new BotDeviceInfo
+        {
+            Guid = guid,
+            MacAddress = macAddress,
             DeviceName = environment.FakeDeviceName,
             SystemKernel = environment.FakeOsRelease.Split(" x86_64", StringSplitOptions.None)[0],
             KernelVersion = environment.FakeOsRelease.Replace("Linux ", "").Replace(" x86_64", "")
         };
+
+        Save(profile, device);
+        return device;
     }
 
-    public void Save(SignServerProfile profile)
+    public void Save(SignServerProfile profile, BotDeviceInfo? device = null)
     {
-        var directory = Path.GetDirectoryName(Path.GetFullPath(ProfilePath));
-        if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-
-        File.WriteAllText(ProfilePath, JsonSerializer.Serialize(profile, new JsonSerializerOptions
+        lock (_lock)
         {
-            WriteIndented = true
-        }));
+            var directory = Path.GetDirectoryName(Path.GetFullPath(DevicePath));
+            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+
+            var root = ReadDeviceRoot(device);
+            root["sign_server_profile"] = JsonSerializer.SerializeToNode(profile, JsonOptions);
+            File.WriteAllText(DevicePath, root.ToJsonString(JsonOptions));
+        }
     }
 
-    private static byte[] ParseMac(string mac)
-        => mac.Split(':').Select(part => Convert.ToByte(part, 16)).ToArray();
+    public void SaveDeviceInfo(BotDeviceInfo device)
+    {
+        lock (_lock)
+        {
+            if (_profile == null)
+            {
+                File.WriteAllText(DevicePath, JsonSerializer.Serialize(device, JsonOptions));
+                return;
+            }
+
+            Save(_profile, device);
+        }
+    }
+
+    private JsonObject ReadDeviceRoot(BotDeviceInfo? device)
+    {
+        JsonObject? root = null;
+        if (File.Exists(DevicePath))
+        {
+            try
+            {
+                root = JsonNode.Parse(File.ReadAllText(DevicePath)) as JsonObject;
+            }
+            catch (Exception e)
+            {
+                _logger.LogWarning(e, "Failed to merge SignServer synthetic profile into existing device file, rewriting it");
+            }
+        }
+
+        root ??= new JsonObject();
+        if (device == null) return root;
+
+        root[nameof(BotDeviceInfo.Guid)] = device.Guid;
+        root[nameof(BotDeviceInfo.MacAddress)] = JsonSerializer.SerializeToNode(device.MacAddress, JsonOptions);
+        root[nameof(BotDeviceInfo.DeviceName)] = device.DeviceName;
+        root[nameof(BotDeviceInfo.SystemKernel)] = device.SystemKernel;
+        root[nameof(BotDeviceInfo.KernelVersion)] = device.KernelVersion;
+        return root;
+    }
+
+    private BotDeviceInfo? ReadDeviceInfo()
+    {
+        if (!File.Exists(DevicePath)) return null;
+
+        try
+        {
+            return JsonSerializer.Deserialize<BotDeviceInfo>(File.ReadAllText(DevicePath));
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Failed to read existing device fields while initializing SignServer synthetic profile");
+            return null;
+        }
+    }
+
+    private static byte[]? TryParseMac(string mac)
+    {
+        try
+        {
+            var bytes = mac.Split(':').Select(part => Convert.ToByte(part, 16)).ToArray();
+            return bytes.Length == 6 ? bytes : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string FormatMac(byte[] mac)
+        => string.Join(':', mac.Take(6).Select(value => value.ToString("x2")));
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true
+    };
 }
 
 public sealed class SignServerProfile
 {
+    private sealed record EnvironmentTemplate(
+        string HostPrefix,
+        string DeviceName,
+        string HardwareModel,
+        string OsRelease,
+        string Timezone,
+        string ProcCmdline,
+        int Weight);
+
+    private static readonly EnvironmentTemplate[] EnvironmentTemplates =
+    {
+        new("uos-office", "ThinkCentre M720q", "Lenovo ThinkCentre M720q", "Linux 5.10.0-amd64-desktop x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 18),
+        new("deepin-desk", "OptiPlex 3070 Micro", "Dell OptiPlex 3070 Micro", "Linux 6.6.25-amd64-desktop-hwe x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 18),
+        new("uos-prodesk", "ProDesk 400 G5 DM", "HP ProDesk 400 G5 Desktop Mini", "Linux 5.15.0-amd64-desktop x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=audio.mojom.AudioService", 16),
+        new("uos-mini", "ThinkCentre M75q Gen 2", "Lenovo ThinkCentre M75q Gen 2", "Linux 5.10.0-amd64-desktop x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 16),
+        new("deepin-pc", "OptiPlex 7090", "Dell OptiPlex 7090", "Linux 6.6.25-amd64-desktop-hwe x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=gpu-process", 14),
+        new("steamdeck", "Steam Deck", "Valve Jupiter", "Linux 6.5.0-valve22-1-neptune-65 x86_64", "Asia/Shanghai",
+            "/usr/bin/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 12),
+        new("bazzite", "ROG Ally RC71L", "ASUSTeK ROG Ally RC71L", "Linux 6.8.10-bazzite x86_64", "Asia/Shanghai",
+            "/usr/lib64/qq/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 10),
+        new("legiongo", "Legion Go 8APU1", "Lenovo Legion Go 8APU1", "Linux 6.8.10-bazzite x86_64", "Asia/Shanghai",
+            "/usr/lib64/qq/qq|--type=gpu-process", 9),
+        new("nitro", "Nitro AN515-58", "Acer Nitro AN515-58", "Linux 6.8.10-bazzite x86_64", "Asia/Shanghai",
+            "/usr/lib64/qq/qq|--type=utility|--lang=zh-CN", 8),
+        new("legion", "Legion 5 15ACH6", "Lenovo Legion 5 15ACH6", "Linux 6.8.10-bazzite x86_64", "Asia/Shanghai",
+            "/usr/lib64/qq/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 8),
+        new("zephyrus", "ROG Zephyrus G14 GA401", "ASUSTeK ROG Zephyrus G14 GA401", "Linux 6.8.10-bazzite x86_64", "Asia/Shanghai",
+            "/usr/lib64/qq/qq|--type=utility|--utility-sub-type=audio.mojom.AudioService", 7),
+        new("framework", "Framework Laptop 13", "Framework Laptop 13", "Linux 6.8.9-300.fc40.x86_64 x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 8),
+        new("system76", "System76 Lemur Pro", "System76 Lemur Pro", "Linux 6.8.0-31-generic x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 7),
+        new("tuxedo", "TUXEDO Pulse 14", "TUXEDO Pulse 14", "Linux 6.8.0-31-generic x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=audio.mojom.AudioService", 7),
+        new("slimbook", "Slimbook Executive 14", "Slimbook Executive 14", "Linux 6.8.9-300.fc40.x86_64 x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 6),
+        new("aurora", "ThinkPad T14 Gen 3", "Lenovo ThinkPad T14 Gen 3", "Linux 6.8.0-60-generic x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 6),
+        new("workstation", "ThinkPad X1 Carbon Gen 10", "Lenovo ThinkPad X1 Carbon Gen 10", "Linux 6.6.15-amd64 x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 4),
+        new("xps", "XPS 13 9310", "Dell XPS 13 9310", "Linux 6.1.0-21-amd64 x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=gpu-process", 4),
+        new("matebook", "MateBook 14 2021", "HUAWEI MateBook 14 2021", "Linux 6.9.7-arch1-1 x86_64", "Asia/Shanghai",
+            "/usr/lib/qq/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 4),
+        new("thinkpad", "ThinkPad T480", "Lenovo ThinkPad T480", "Linux 6.1.0-21-amd64 x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 4),
+        new("latitude", "Latitude 5420", "Dell Latitude 5420", "Linux 6.8.0-31-generic x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=audio.mojom.AudioService", 4),
+        new("officebook", "EliteBook 845 G8", "HP EliteBook 845 G8 Notebook PC", "Linux 6.5.0-35-generic x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 4),
+        new("x260", "ThinkPad X260", "Lenovo ThinkPad X260", "Linux 6.1.0-21-amd64 x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 4),
+        new("old-desk", "OptiPlex 7040", "Dell OptiPlex 7040", "Linux 6.1.0-21-amd64 x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=audio.mojom.AudioService", 4),
+        new("h110", "Core i5-6500 Desktop", "Gigabyte H110M-S2PH", "Linux 6.6.15-amd64 x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 3),
+        new("x99", "Xeon E5-2678 v3 Desktop", "ASUS X99-A II", "Linux 6.1.0-21-amd64 x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=gpu-process", 3),
+        new("e5box", "Xeon E5-2680 v4 Desktop", "Gigabyte X99-UD4", "Linux 6.6.15-amd64 x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--lang=zh-CN", 3),
+        new("b450", "Ryzen 5 3600 Desktop", "MSI B450M MORTAR MAX", "Linux 6.8.0-31-generic x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 3),
+        new("b550", "Ryzen 7 3700X Desktop", "Gigabyte B550M AORUS ELITE", "Linux 6.8.9-300.fc40.x86_64 x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=audio.mojom.AudioService", 3),
+        new("minipc", "SER5 MAX", "MINISFORUM SER5 MAX", "Linux 6.7.12-200.fc39.x86_64 x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 4),
+        new("labpc", "B660M DS3H DDR4", "Gigabyte B660M DS3H DDR4 Desktop", "Linux 6.7.12-200.fc39.x86_64 x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=zygote", 3),
+        new("zen5", "Ryzen 9 9950X Desktop", "ASUS ProArt X870E-CREATOR WIFI", "Linux 6.10.2-arch1-1 x86_64", "Asia/Shanghai",
+            "/usr/lib/qq/qq|--type=utility|--lang=zh-CN", 3),
+        new("raptor", "Core i9-14900K Desktop", "ASUS ROG MAXIMUS Z790 HERO", "Linux 6.9.12-200.fc40.x86_64 x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=zygote", 3),
+        new("aorus", "Core i9-14900K Workstation", "Gigabyte Z790 AORUS MASTER X", "Linux 6.9.12-200.fc40.x86_64 x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 2),
+        new("ultra9", "Core Ultra 9 285K Workstation", "MSI MPG Z890 CARBON WIFI", "Linux 6.11.4-arch1-1 x86_64", "Asia/Shanghai",
+            "/usr/lib/qq/qq|--type=utility|--utility-sub-type=audio.mojom.AudioService", 2),
+        new("threadripper", "Threadripper PRO 7975WX Workstation", "ASUS Pro WS WRX90E-SAGE SE", "Linux 6.10.2-arch1-1 x86_64", "Asia/Shanghai",
+            "/usr/lib/qq/qq|--type=utility|--lang=zh-CN", 2),
+        new("precision", "Precision 5860 Tower", "Dell Precision 5860 Tower", "Linux 6.8.0-31-generic x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 2),
+        new("thinkstation", "ThinkStation P3 Tower", "Lenovo ThinkStation P3 Tower", "Linux 6.8.0-31-generic x86_64", "Asia/Shanghai",
+            "/opt/QQ/qq|--type=utility|--utility-sub-type=network.mojom.NetworkService", 2)
+    };
+
     [JsonPropertyName("schema_version")] public int SchemaVersion { get; set; } = 1;
 
     [JsonPropertyName("profile_id")] public string ProfileId { get; set; } = "";
@@ -100,13 +282,17 @@ public sealed class SignServerProfile
 
     [JsonPropertyName("online_state")] public SignServerOnlineState OnlineState { get; set; } = new();
 
-    public static SignServerProfile Create(string wrapperVersion)
+    public static SignServerProfile Create(string wrapperVersion, BotDeviceInfo? existing = null)
     {
         var guidBytes = RandomNumberGenerator.GetBytes(16);
-        var guid = new Guid(guidBytes);
+        var guid = existing?.Guid ?? new Guid(guidBytes);
         var machineId = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
-        var mac = $"02:{machineId[0..2]}:{machineId[2..4]}:{machineId[4..6]}:{machineId[6..8]}:{machineId[8..10]}";
+        var mac = existing?.MacAddress is { Length: >= 6 } existingMac
+            ? string.Join(':', existingMac.Take(6).Select(value => value.ToString("x2")))
+            : $"02:{machineId[0..2]}:{machineId[2..4]}:{machineId[4..6]}:{machineId[6..8]}:{machineId[8..10]}";
         var sessionSuffix = Convert.ToHexString(RandomNumberGenerator.GetBytes(4)).ToLowerInvariant();
+        var template = SelectWeightedTemplate();
+        var hostSuffix = RandomNumberGenerator.GetInt32(10, 99).ToString();
 
         return new SignServerProfile
         {
@@ -121,8 +307,29 @@ public sealed class SignServerProfile
                 MachineId = machineId,
                 MacAddress = mac
             },
-            Environment = new SignServerProfileEnvironment()
+            Environment = SignServerProfileEnvironment.FromTemplate(
+                template.HostPrefix,
+                template.DeviceName,
+                template.HardwareModel,
+                template.OsRelease,
+                template.Timezone,
+                template.ProcCmdline,
+                hostSuffix)
         };
+    }
+
+    private static EnvironmentTemplate SelectWeightedTemplate()
+    {
+        var totalWeight = EnvironmentTemplates.Sum(template => template.Weight);
+        var selected = RandomNumberGenerator.GetInt32(totalWeight);
+
+        foreach (var template in EnvironmentTemplates)
+        {
+            if (selected < template.Weight) return template;
+            selected -= template.Weight;
+        }
+
+        return EnvironmentTemplates[^1];
     }
 }
 
@@ -170,6 +377,27 @@ public sealed class SignServerProfileEnvironment
     [JsonPropertyName("vendor_name")] public string VendorName { get; set; } = "";
 
     [JsonPropertyName("os_lower")] public string OsLower { get; set; } = "linux";
+
+    internal static SignServerProfileEnvironment FromTemplate(
+        string hostPrefix,
+        string deviceName,
+        string hardwareModel,
+        string osRelease,
+        string timezone,
+        string procCmdline,
+        string hostSuffix) => new()
+        {
+            FakeHostname = $"{hostPrefix}-{hostSuffix}",
+            FakeProcComm = "qq",
+            FakeProcCmdline = procCmdline,
+            FakeDeviceName = deviceName,
+            FakeHardwareModel = hardwareModel,
+            FakeOsRelease = osRelease,
+            FakeTimezone = timezone,
+            LocaleId = 2052,
+            VendorName = "",
+            OsLower = "linux"
+        };
 }
 
 public sealed class SignServerOnlineState

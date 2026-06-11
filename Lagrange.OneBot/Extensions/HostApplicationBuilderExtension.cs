@@ -56,10 +56,13 @@ public static class HostApplicationBuilderExtension
                 if (configuration.GetValue("SignServer:UseSyntheticProfile", true))
                 {
                     device = services.GetRequiredService<SignServerProfileStore>().BuildDeviceInfo(device);
+                    services.GetRequiredService<SignServerProfileStore>().SaveDeviceInfo(device);
                 }
-
-                string deviceJson = JsonSerializer.Serialize(device);
-                File.WriteAllText(path, deviceJson);
+                else
+                {
+                    string deviceJson = JsonSerializer.Serialize(device);
+                    File.WriteAllText(path, deviceJson);
+                }
 
                 return device;
             })
