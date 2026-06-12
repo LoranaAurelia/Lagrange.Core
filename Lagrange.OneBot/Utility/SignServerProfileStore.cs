@@ -402,6 +402,40 @@ public sealed class SignServerProfileEnvironment
 
 public sealed class SignServerOnlineState
 {
+    [JsonPropertyName("online_push_flags")] public uint OnlinePushFlags { get; set; }
+
+    [JsonPropertyName("heartbeat_counter")] public uint HeartbeatCounter { get; set; }
+
+    [JsonPropertyName("last_push_command")] public string? LastPushCommand { get; set; }
+
+    [JsonPropertyName("last_push_branch")] public string? LastPushBranch { get; set; }
+
+    [JsonPropertyName("last_push_field1")] public string? LastPushField1 { get; set; }
+
+    [JsonPropertyName("push_params_count")] public uint PushParamsCount { get; set; }
+
+    [JsonPropertyName("push_params_last_field1")] public string? PushParamsLastField1 { get; set; }
+
+    [JsonPropertyName("push_params_last_hash")] public string? PushParamsLastHash { get; set; }
+
+    [JsonPropertyName("info_sync_push_count")] public uint InfoSyncPushCount { get; set; }
+
+    [JsonPropertyName("info_sync_push_variant_counts")] public Dictionary<string, uint> InfoSyncPushVariantCounts { get; set; } = new();
+
+    [JsonPropertyName("info_sync_push_last_field3")] public string? InfoSyncPushLastField3 { get; set; }
+
+    [JsonPropertyName("info_sync_push_last_field4")] public string? InfoSyncPushLastField4 { get; set; }
+
+    [JsonPropertyName("info_sync_push_last_hash")] public string? InfoSyncPushLastHash { get; set; }
+
+    [JsonPropertyName("config_push_count")] public uint ConfigPushCount { get; set; }
+
+    [JsonPropertyName("config_push_last_hash")] public string? ConfigPushLastHash { get; set; }
+
+    [JsonPropertyName("msf_login_notify_count")] public uint MsfLoginNotifyCount { get; set; }
+
+    [JsonPropertyName("msf_login_notify_last_hash")] public string? MsfLoginNotifyLastHash { get; set; }
+
     [JsonPropertyName("last_sso_info_sync_seq")] public uint LastSsoInfoSyncSeq { get; set; }
 
     [JsonPropertyName("last_heartbeat_seq")] public uint LastHeartbeatSeq { get; set; }
@@ -410,7 +444,11 @@ public sealed class SignServerOnlineState
 
     [JsonPropertyName("transinfo")] public Dictionary<string, SignServerStateHash> TransInfo { get; set; } = new();
 
+    [JsonPropertyName("transinfo_values")] public Dictionary<string, string> TransInfoValues { get; set; } = new();
+
     [JsonPropertyName("register_context")] public SignServerStateHash RegisterContext { get; set; } = new();
+
+    [JsonPropertyName("register_context_hex")] public string RegisterContextHex { get; set; } = "";
 }
 
 public sealed class SignServerStateHash

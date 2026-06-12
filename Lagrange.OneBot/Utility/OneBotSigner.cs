@@ -142,14 +142,17 @@ public class OneBotSigner : SignProvider
                 { "seq", context.Sequence },
                 { "payload_len", context.Payload.Length },
                 { "payload_sha256_16", payloadHash },
+                { "reserve_hex", Convert.ToHexString(context.ReserveField) },
+                { "pb_extra_hex", "" },
+                { "register_context_hex", profile.OnlineState.RegisterContextHex },
+                { "secure_hex", "" },
+                { "heartbeat_hex", "" },
                 { "reserve_len", context.ReserveField.Length },
                 { "reserve_sha256_16", reserveHash },
-                { "transinfo", BuildTransInfoMetadata(context.ReserveFields) }
+                { "transinfo", BuildTransInfoMetadata(context.ReserveFields, profile) }
             };
 
-            var requestJson = BuildRequestContext(profile, context.Keystore.Uin, 0, Array.Empty<byte>(), null);
-            requestJson.Remove("seq");
-            requestJson.Remove("src");
+            var requestJson = BuildRequestContext(profile, context.Keystore.Uin, context.Sequence, context.Payload, context.Command);
             requestJson["state_push"] = statePush;
 
             using var request = new HttpRequestMessage
@@ -162,7 +165,12 @@ public class OneBotSigner : SignProvider
             using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(
                 _configuration.GetValue("SignServer:StatePushTimeoutMs", 1000)));
             using var response = _client.Send(request, cts.Token);
-            if (!response.IsSuccessStatusCode)
+            if (response.IsSuccessStatusCode)
+            {
+                var json = JsonDocument.Parse(response.Content.ReadAsStream()).RootElement;
+                if (TryApplyOnlineStateFromResponse(profile, json)) _profileStore.Save(profile);
+            }
+            else
             {
                 _logger.LogDebug("SignServer state push returned {StatusCode}", response.StatusCode);
             }
@@ -208,13 +216,16 @@ public class OneBotSigner : SignProvider
         }
 
         var result = ParseSignResult(json);
+        bool stateChanged = TryApplyOnlineStateFromResponse(profile, json);
         if (!string.IsNullOrEmpty(result.NativeTier))
         {
             profile.OnlineState.LastNativeTiers[cmd] = result.NativeTier;
             if (cmd == "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync") profile.OnlineState.LastSsoInfoSyncSeq = seq;
             if (cmd == "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat") profile.OnlineState.LastHeartbeatSeq = seq;
-            _profileStore.Save(profile);
+            stateChanged = true;
         }
+
+        if (stateChanged) _profileStore.Save(profile);
 
         return result;
     }
@@ -242,7 +253,8 @@ public class OneBotSigner : SignProvider
             { "fake_device_name", environment.FakeDeviceName },
             { "fake_hardware_model", environment.FakeHardwareModel },
             { "fake_os_release", environment.FakeOsRelease },
-            { "fake_timezone", environment.FakeTimezone }
+            { "fake_timezone", environment.FakeTimezone },
+            { "online_state", JsonSerializer.SerializeToNode(profile.OnlineState) }
         };
 
         if (cmd != null) request["cmd"] = cmd;
@@ -397,9 +409,14 @@ public class OneBotSigner : SignProvider
         return result;
     }
 
-    private static JsonObject BuildTransInfoMetadata(object? reserveFields)
+    private static JsonObject BuildTransInfoMetadata(object? reserveFields, SignServerProfile profile)
     {
         var output = new JsonObject();
+        foreach (var (key, value) in profile.OnlineState.TransInfoValues)
+        {
+            output[key] = value;
+        }
+
         if (reserveFields == null) return output;
 
         var transInfoProperty = reserveFields.GetType().GetProperty("TransInfo");
@@ -408,11 +425,9 @@ public class OneBotSigner : SignProvider
         foreach (var (key, value) in transInfo)
         {
             var bytes = Encoding.UTF8.GetBytes(value);
-            output[key] = new JsonObject
-            {
-                { "len", bytes.Length },
-                { "sha256_16", Sha256_16(bytes) }
-            };
+            output[key] = value;
+            profile.OnlineState.TransInfoValues[key] = value;
+            profile.OnlineState.TransInfo[key] = new SignServerStateHash { Len = bytes.Length, Sha256_16 = Sha256_16(bytes) };
         }
 
         return output;
@@ -420,11 +435,15 @@ public class OneBotSigner : SignProvider
 
     private void UpdateProfileState(SignServerProfile profile, object? reserveFields, byte[] reserveField)
     {
-        profile.OnlineState.RegisterContext = new SignServerStateHash
+        if (reserveField.Length > 0)
         {
-            Len = reserveField.Length,
-            Sha256_16 = Sha256_16(reserveField)
-        };
+            profile.OnlineState.RegisterContext = new SignServerStateHash
+            {
+                Len = reserveField.Length,
+                Sha256_16 = Sha256_16(reserveField)
+            };
+            profile.OnlineState.RegisterContextHex = Convert.ToHexString(reserveField);
+        }
 
         var transInfoProperty = reserveFields?.GetType().GetProperty("TransInfo");
         if (transInfoProperty?.GetValue(reserveFields) is IDictionary<string, string> transInfo)
@@ -437,6 +456,7 @@ public class OneBotSigner : SignProvider
                     Len = bytes.Length,
                     Sha256_16 = Sha256_16(bytes)
                 };
+                profile.OnlineState.TransInfoValues[key] = value;
             }
         }
 
@@ -445,4 +465,77 @@ public class OneBotSigner : SignProvider
 
     private static string Sha256_16(byte[] bytes)
         => bytes.Length == 0 ? "" : Convert.ToHexString(SHA256.HashData(bytes))[..16];
+
+    private static bool TryApplyOnlineStateFromResponse(SignServerProfile profile, JsonElement json)
+    {
+        if (!TryFindOnlineState(json, out var onlineStateJson)) return false;
+
+        try
+        {
+            var incoming = onlineStateJson.Deserialize<SignServerOnlineState>();
+            if (incoming == null) return false;
+
+            MergeOnlineState(profile.OnlineState, incoming);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryFindOnlineState(JsonElement json, out JsonElement onlineState)
+    {
+        onlineState = default;
+        if (!json.TryGetProperty("value", out var value)) return false;
+
+        if (value.TryGetProperty("extra_fields", out var extraFields))
+        {
+            if (extraFields.TryGetProperty("state_push", out var statePush) &&
+                statePush.TryGetProperty("online_state", out onlineState))
+            {
+                return onlineState.ValueKind == JsonValueKind.Object;
+            }
+
+            if (extraFields.TryGetProperty("online_state", out onlineState))
+            {
+                return onlineState.ValueKind == JsonValueKind.Object;
+            }
+        }
+
+        if (value.TryGetProperty("online_state", out onlineState))
+        {
+            return onlineState.ValueKind == JsonValueKind.Object;
+        }
+
+        return false;
+    }
+
+    private static void MergeOnlineState(SignServerOnlineState target, SignServerOnlineState incoming)
+    {
+        target.OnlinePushFlags |= incoming.OnlinePushFlags;
+        target.HeartbeatCounter = Math.Max(target.HeartbeatCounter, incoming.HeartbeatCounter);
+        target.PushParamsCount = Math.Max(target.PushParamsCount, incoming.PushParamsCount);
+        target.InfoSyncPushCount = Math.Max(target.InfoSyncPushCount, incoming.InfoSyncPushCount);
+        target.ConfigPushCount = Math.Max(target.ConfigPushCount, incoming.ConfigPushCount);
+        target.MsfLoginNotifyCount = Math.Max(target.MsfLoginNotifyCount, incoming.MsfLoginNotifyCount);
+
+        target.LastPushCommand = incoming.LastPushCommand ?? target.LastPushCommand;
+        target.LastPushBranch = incoming.LastPushBranch ?? target.LastPushBranch;
+        target.LastPushField1 = incoming.LastPushField1 ?? target.LastPushField1;
+        target.PushParamsLastField1 = incoming.PushParamsLastField1 ?? target.PushParamsLastField1;
+        target.PushParamsLastHash = incoming.PushParamsLastHash ?? target.PushParamsLastHash;
+        target.InfoSyncPushLastField3 = incoming.InfoSyncPushLastField3 ?? target.InfoSyncPushLastField3;
+        target.InfoSyncPushLastField4 = incoming.InfoSyncPushLastField4 ?? target.InfoSyncPushLastField4;
+        target.InfoSyncPushLastHash = incoming.InfoSyncPushLastHash ?? target.InfoSyncPushLastHash;
+        target.ConfigPushLastHash = incoming.ConfigPushLastHash ?? target.ConfigPushLastHash;
+        target.MsfLoginNotifyLastHash = incoming.MsfLoginNotifyLastHash ?? target.MsfLoginNotifyLastHash;
+
+        foreach (var (key, value) in incoming.InfoSyncPushVariantCounts)
+        {
+            target.InfoSyncPushVariantCounts[key] = Math.Max(
+                target.InfoSyncPushVariantCounts.GetValueOrDefault(key),
+                value);
+        }
+    }
 }
