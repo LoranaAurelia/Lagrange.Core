@@ -71,7 +71,17 @@ public class LoginService(IConfiguration configuration, ILogger<LoginService> lo
 
     private void SaveKeystore()
     {
-        string keystoreJson = JsonSerializer.Serialize(_lagrange.UpdateKeystore());
+        var keystore = _lagrange.UpdateKeystore();
+        if (keystore.Uin == 0 &&
+            keystore.Session.D2.Length == 0 &&
+            keystore.Session.Tgt.Length == 0 &&
+            (keystore.Session.TempPassword == null || keystore.Session.TempPassword.Length == 0))
+        {
+            _logger.LogWarning("Skip saving empty keystore");
+            return;
+        }
+
+        string keystoreJson = JsonSerializer.Serialize(keystore);
         File.WriteAllText(configuration["ConfigPath:Keystore"] ?? "keystore.json", keystoreJson);
     }
 
