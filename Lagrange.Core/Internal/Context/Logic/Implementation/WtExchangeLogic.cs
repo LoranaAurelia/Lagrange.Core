@@ -444,7 +444,12 @@ internal class WtExchangeLogic : LogicBase
             var resp = (InfoSyncEvent)registerResponse[0];
             Collection.Log.LogInfo(Tag, $"Register Status: {resp.Message}");
 
-            bool result = resp.Message.Contains("register success");
+            bool result = resp.Message.Contains("register success") || resp.Message == "IDK";
+            if (resp.Message == "IDK")
+            {
+                Collection.Log.LogWarning(Tag, "Register status is unknown, continue online flow with current session");
+            }
+
             if (result)
             {
                 if (Collection.Config.EnableStatusRegister)
