@@ -71,6 +71,7 @@ internal class UrlSigner : SignProvider
     {
         if (!WhiteListCommand.Contains(context.Command)) return new SignResult();
         if (_signServer == null) throw new Exception("Sign server is not configured");
+        if (SignProvider.IsRoutedOnlineCommand(context.Command)) return new SignResult();
 
         string? route = _advancedMode ? GetRoutedEndpoint(context.Command) : null;
         if (route == null)

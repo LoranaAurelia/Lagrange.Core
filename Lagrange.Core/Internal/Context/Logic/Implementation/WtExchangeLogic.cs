@@ -226,7 +226,8 @@ internal class WtExchangeLogic : LogicBase
                     {
                         Collection.Log.LogInfo(Tag, "Login Success");
 
-                        return await BotOnline();
+                        await BotOnline();
+                        return true;
                     }
                     case LoginCommon.Error.UnusualVerify:
                     {
@@ -443,27 +444,24 @@ internal class WtExchangeLogic : LogicBase
             var resp = (InfoSyncEvent)registerResponse[0];
             Collection.Log.LogInfo(Tag, $"Register Status: {resp.Message}");
 
-            bool infoSyncSuccess = IsPositiveRegisterStatus(resp.Message);
-            bool statusRegisterSuccess = false;
-            if (Collection.Config.EnableStatusRegister)
+            bool result = resp.Message.Contains("register success") || resp.Message == "IDK";
+            if (resp.Message == "IDK")
             {
-                var statusRegisterResponse = await Collection.Business.SendEvent(StatusRegisterEvent.Create());
-                if (statusRegisterResponse.Count != 0)
-                {
-                    var status = (StatusRegisterEvent)statusRegisterResponse[0];
-                    Collection.Log.LogInfo(Tag, $"Status Register: {status.Message}");
-                    statusRegisterSuccess = IsPositiveRegisterStatus(status.Message);
-                }
+                Collection.Log.LogWarning(Tag, "Register status is unknown, continue online flow with current session");
             }
 
-            if (string.Equals(resp.Message, "IDK", StringComparison.OrdinalIgnoreCase))
-            {
-                Collection.Log.LogWarning(Tag, "Register status is unknown; credentials are valid but online state is not confirmed");
-            }
-
-            bool result = infoSyncSuccess || statusRegisterSuccess;
             if (result)
             {
+                if (Collection.Config.EnableStatusRegister)
+                {
+                    var statusRegisterResponse = await Collection.Business.SendEvent(StatusRegisterEvent.Create());
+                    if (statusRegisterResponse.Count != 0)
+                    {
+                        var status = (StatusRegisterEvent)statusRegisterResponse[0];
+                        Collection.Log.LogInfo(Tag, $"Status Register: {status.Message}");
+                    }
+                }
+
                 Collection.Scheduler.Interval(SsoHeartbeatEvent, (int)(4.5 * 60 * 1000), heartbeatDelegate);
 
                 var onlineEvent = new BotOnlineEvent(reason);
@@ -472,22 +470,11 @@ internal class WtExchangeLogic : LogicBase
                 _reLoginTimer.Change(TimeSpan.FromDays(15), TimeSpan.FromDays(15));
                 Collection.Log.LogInfo(Tag, "AutoReLogin Enabled, session would be refreshed in 15 days period");
             }
-            else
-            {
-                Collection.Log.LogWarning(Tag, "Online state is not confirmed; OneBot services will not start");
-            }
 
             return result;
         }
 
         return false;
-    }
-
-    private static bool IsPositiveRegisterStatus(string? message)
-    {
-        if (string.IsNullOrWhiteSpace(message)) return false;
-        return message.Contains("register success", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(message, "OK", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<bool> FetchUnusual()
