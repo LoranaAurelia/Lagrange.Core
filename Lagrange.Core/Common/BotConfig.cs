@@ -34,7 +34,7 @@ public class BotConfig
     public SignProvider? CustomSignProvider { get; set; } = null;
 
     /// <summary>
-    /// Whether to send StatusService.Register after SsoInfoSync succeeds.
+    /// Whether to send StatusService.Register during online-status validation.
     /// </summary>
     public bool EnableStatusRegister { get; set; } = false;
 

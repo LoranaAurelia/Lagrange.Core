@@ -27,8 +27,7 @@ internal static class SsoPacker
             DeviceInfo = device,
             Keystore = keystore
         });
-        var payload = signProvider.UseNativeBodyForOnline &&
-                      SignProvider.IsRoutedOnlineCommand(packet.Command) &&
+        var payload = signProvider.ShouldUseNativeBody(packet.Command, signResult) &&
                       signResult.NativeBody is { Length: > 0 }
             ? signResult.NativeBody
             : packet.Payload;

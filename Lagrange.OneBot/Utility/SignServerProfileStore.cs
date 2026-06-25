@@ -282,6 +282,8 @@ public sealed class SignServerProfile
 
     [JsonPropertyName("online_state")] public SignServerOnlineState OnlineState { get; set; } = new();
 
+    [JsonPropertyName("sso_report_source")] public SignServerSsoReportSource SsoReportSource { get; set; } = new();
+
     public static SignServerProfile Create(string wrapperVersion, BotDeviceInfo? existing = null)
     {
         var guidBytes = RandomNumberGenerator.GetBytes(16);
@@ -314,7 +316,8 @@ public sealed class SignServerProfile
                 template.OsRelease,
                 template.Timezone,
                 template.ProcCmdline,
-                hostSuffix)
+                hostSuffix),
+            SsoReportSource = SignServerSsoReportSource.FromTemplate(template.HardwareModel)
         };
     }
 
@@ -340,6 +343,69 @@ public sealed class SignServerProfileApp
     [JsonPropertyName("current_version")] public string CurrentVersion { get; set; } = "3.2.29-49738";
 
     [JsonPropertyName("platform")] public string Platform { get; set; } = "Linux";
+}
+
+public sealed class SignServerSsoReportSource
+{
+    [JsonPropertyName("report_type")] public int ReportType { get; set; } = 1;
+
+    [JsonPropertyName("brand")] public string Brand { get; set; } = "Lenovo";
+
+    [JsonPropertyName("model")] public string Model { get; set; } = "ThinkPad T14 Gen 2";
+
+    [JsonPropertyName("device_type")] public int DeviceType { get; set; } = 2;
+
+    [JsonPropertyName("version")] public string Version { get; set; } = "3.2.29-49738";
+
+    [JsonPropertyName("version_entries")] public List<SignServerVersionEntry> VersionEntries { get; set; } =
+    [
+        new SignServerVersionEntry()
+    ];
+
+    [JsonPropertyName("opaque_field4_hex")] public string OpaqueField4Hex { get; set; } = "";
+
+    internal static SignServerSsoReportSource FromTemplate(string hardwareModel)
+    {
+        var (brand, model) = SplitBrandModel(hardwareModel);
+        return new SignServerSsoReportSource
+        {
+            Brand = brand,
+            Model = model,
+            DeviceType = 2,
+            Version = "3.2.29-49738",
+            VersionEntries = [new SignServerVersionEntry()]
+        };
+    }
+
+    private static (string Brand, string Model) SplitBrandModel(string hardwareModel)
+    {
+        var knownBrands = new[]
+        {
+            "Lenovo", "Dell", "HP", "ASUSTeK", "ASUS", "Acer", "Valve", "System76", "TUXEDO",
+            "Slimbook", "HUAWEI", "Gigabyte", "MSI", "MINISFORUM", "Framework"
+        };
+
+        foreach (var brand in knownBrands)
+        {
+            if (!hardwareModel.StartsWith(brand, StringComparison.OrdinalIgnoreCase)) continue;
+            var model = hardwareModel[brand.Length..].Trim();
+            return (brand, string.IsNullOrEmpty(model) ? hardwareModel : model);
+        }
+
+        var parts = hardwareModel.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length == 2 ? (parts[0], parts[1]) : ("Generic", hardwareModel);
+    }
+}
+
+public sealed class SignServerVersionEntry
+{
+    [JsonPropertyName("group")] public string Group { get; set; } = "LinuxQQ";
+
+    [JsonPropertyName("old_version")] public string OldVersion { get; set; } = "3.2.29-49738";
+
+    [JsonPropertyName("group_id")] public int GroupId { get; set; }
+
+    [JsonPropertyName("new_version")] public int NewVersion { get; set; } = 49738;
 }
 
 public sealed class SignServerProfileIdentity

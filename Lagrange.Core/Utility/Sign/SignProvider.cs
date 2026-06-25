@@ -8,6 +8,8 @@ public abstract class SignProvider
 
     public virtual bool StrictNativeTier => false;
 
+    public virtual bool ShouldUseNativeBody(string command, SignResult result) => false;
+
     protected static readonly string[] WhiteListCommand =
     {
         "trpc.o3.ecdh_access.EcdhAccess.SsoEstablishShareKey",
@@ -72,6 +74,9 @@ public abstract class SignProvider
         "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync" or
         "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat" or
         "trpc.qq_new_tech.status_svc.StatusService.Register";
+
+    public static bool IsRoutedReportCommand(string command) =>
+        command == "trpc.o3.report.Report.SsoReport";
 }
 
 public sealed class SignRequestContext
@@ -97,6 +102,8 @@ public sealed class SignResult
 
     public string? Token { get; init; }
 
+    public int? TokenLength { get; init; }
+
     public byte[]? NativeBody { get; init; }
 
     public string? NativeTier { get; init; }
@@ -104,6 +111,8 @@ public sealed class SignResult
     public IReadOnlyList<SignStateUpdate> StateUpdates { get; init; } = Array.Empty<SignStateUpdate>();
 
     public string? Diagnostic { get; init; }
+
+    public string? ExtraFields { get; init; }
 }
 
 public sealed class SignStateUpdate

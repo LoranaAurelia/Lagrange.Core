@@ -39,9 +39,14 @@ public class OneBotSigner : SignProvider
 
     private readonly bool _strictNativeTier;
 
-    public override bool UseNativeBodyForOnline => _advancedMode && (_mode == "native-body-online" || _mode == "strict");
+    public override bool UseNativeBodyForOnline => false;
 
     public override bool StrictNativeTier => _strictNativeTier || _mode == "strict";
+
+    public override bool ShouldUseNativeBody(string command, SignResult result) =>
+        SignProvider.IsRoutedReportCommand(command) &&
+        result.NativeTier == "pure-calc-body" &&
+        result.NativeBody is { Length: > 0 };
 
     public OneBotSigner(IConfiguration config, ILogger<OneBotSigner> logger, SignServerProfileStore profileStore)
     {
@@ -114,8 +119,9 @@ public class OneBotSigner : SignProvider
         try
         {
             var routed = SendSignRequest(context.Command, context.Sequence, context.Body, context, false, route);
-            LogSignResult(context.Command, context.Sequence, routed);
+            LogSignResult(context.Command, context.Sequence, context.Body, routed, route);
             EnforceTier(context.Command, routed.NativeTier);
+            EnforceRoutedBodyRules(context.Command, routed);
             return routed;
         }
         catch (Exception e) when (!StrictNativeTier)
@@ -136,15 +142,16 @@ public class OneBotSigner : SignProvider
             var payloadHash = Sha256_16(context.Payload);
             var reserveHash = Sha256_16(context.ReserveField);
             UpdateProfileState(profile, context.ReserveFields, context.ReserveField);
+            bool includeRawHex = _configuration.GetValue("SignServer:IncludeRawStatePushHex", false);
             var statePush = new JsonObject
             {
                 { "command", context.Command },
                 { "seq", context.Sequence },
                 { "payload_len", context.Payload.Length },
                 { "payload_sha256_16", payloadHash },
-                { "reserve_hex", Convert.ToHexString(context.ReserveField) },
+                { "reserve_hex", includeRawHex ? Convert.ToHexString(context.ReserveField) : "" },
                 { "pb_extra_hex", "" },
-                { "register_context_hex", profile.OnlineState.RegisterContextHex },
+                { "register_context_hex", includeRawHex ? profile.OnlineState.RegisterContextHex : "" },
                 { "secure_hex", "" },
                 { "heartbeat_hex", "" },
                 { "reserve_len", context.ReserveField.Length },
@@ -184,7 +191,7 @@ public class OneBotSigner : SignProvider
     private SignResult SendSignRequest(string cmd, uint seq, byte[] body, SignRequestContext? context, bool legacy, string? route = null)
     {
         var profile = _profileStore.GetProfile();
-        var requestJson = BuildRequestContext(profile, context?.Keystore.Uin ?? 0, seq, body, legacy ? cmd : null);
+        var requestJson = BuildRequestContext(profile, context?.Keystore.Uin ?? 0, seq, body, legacy ? cmd : null, cmd);
         string endpoint = route == null ? _signServer! : $"{_signServer!.TrimEnd('/')}/{route}";
         using var request = new HttpRequestMessage
         {
@@ -230,7 +237,7 @@ public class OneBotSigner : SignProvider
         return result;
     }
 
-    private JsonObject BuildRequestContext(SignServerProfile profile, uint uin, uint seq, byte[] body, string? cmd)
+    private JsonObject BuildRequestContext(SignServerProfile profile, uint uin, uint seq, byte[] body, string? cmd, string? command = null)
     {
         if (uin != 0 && profile.Identity.Uin != uin.ToString())
         {
@@ -254,10 +261,16 @@ public class OneBotSigner : SignProvider
             { "fake_hardware_model", environment.FakeHardwareModel },
             { "fake_os_release", environment.FakeOsRelease },
             { "fake_timezone", environment.FakeTimezone },
-            { "online_state", JsonSerializer.SerializeToNode(profile.OnlineState) }
+            { "online_state", JsonSerializer.SerializeToNode(profile.OnlineState) },
+            { "context_handles", BuildContextHandles(profile) }
         };
 
         if (cmd != null) request["cmd"] = cmd;
+        if (command == "trpc.o3.report.Report.SsoReport")
+        {
+            request["sso_report_source"] = JsonSerializer.SerializeToNode(profile.SsoReportSource);
+        }
+
         return request;
     }
 
@@ -275,10 +288,12 @@ public class OneBotSigner : SignProvider
             Sign = string.IsNullOrEmpty(sign) ? null : Convert.FromHexString(sign),
             Extra = string.IsNullOrEmpty(extra) ? Array.Empty<byte>() : Convert.FromHexString(extra),
             Token = string.IsNullOrEmpty(token) ? "" : Encoding.UTF8.GetString(Convert.FromHexString(token)),
+            TokenLength = string.IsNullOrEmpty(token) ? 0 : Convert.FromHexString(token).Length,
             NativeBody = string.IsNullOrEmpty(nativeBody) ? null : Convert.FromHexString(nativeBody),
             NativeTier = nativeTier,
             StateUpdates = ParseStateUpdates(valueJson),
-            Diagnostic = valueJson.TryGetProperty("diagnostic", out var diagnostic) ? diagnostic.GetRawText() : null
+            Diagnostic = valueJson.TryGetProperty("diagnostic", out var diagnostic) ? diagnostic.GetRawText() : null,
+            ExtraFields = valueJson.TryGetProperty("extra_fields", out var extraFields) ? extraFields.GetRawText() : null
         };
     }
 
@@ -348,20 +363,46 @@ public class OneBotSigner : SignProvider
         "trpc.qq_new_tech.status_svc.StatusService.Register" => "online/status-register",
         "trpc.o3.ecdh_access.EcdhAccess.SsoEstablishShareKey" => "secure/establish-share-key",
         "trpc.o3.ecdh_access.EcdhAccess.SsoSecureAccess" => "secure/secure-access",
+        "trpc.o3.report.Report.SsoReport" => "report/sso-report",
         _ => null
     };
 
-    private void LogSignResult(string command, uint seq, SignResult result)
+    private void LogSignResult(string command, uint seq, byte[] body, SignResult result, string endpoint)
     {
+        var diagnostic = TryParseJson(result.Diagnostic);
+        var extraFields = TryParseJson(result.ExtraFields);
+        var diagnosticCmd = TryGetNestedString(diagnostic, "cmd") ?? command;
+        var diagnosticSrcLen = TryGetNestedInt(diagnostic, "src_len");
+        var diagnosticNativeBodyLen = TryGetNestedInt(diagnostic, "native_body_len");
+        var ssoReportBodyHash = TryGetNestedString(extraFields, "sso_report", "body_sha256_16") ?? "";
+        var calledRvas = TryGetRawProperty(diagnostic, "called_rvas") ?? "";
+        var stateUpdates = result.StateUpdates.Count == 0
+            ? ""
+            : string.Join(",", result.StateUpdates.Select(update => $"{update.Kind}:{update.Len}:{update.Sha256_16}"));
+
         _logger.LogInformation(
-            "SignServer routed command={Command} seq={Sequence} native_tier={NativeTier} native_body_len={NativeBodyLen} sign_len={SignLen} token_len={TokenLen} extra_len={ExtraLen}",
+            "SignServer routed command={Command} diagnostic_cmd={DiagnosticCommand} endpoint={Endpoint} seq={Sequence} body_len={BodyLen} body_sha256_16={BodyHash} native_tier={NativeTier} native_body_len={NativeBodyLen} diagnostic_src_len={DiagnosticSrcLen} diagnostic_native_body_len={DiagnosticNativeBodyLen} sso_report_body_sha256_16={SsoReportBodyHash} sign_len={SignLen} token_len={TokenLen} extra_len={ExtraLen} called_rvas={CalledRvas} state_updates={StateUpdates}",
             command,
+            diagnosticCmd,
+            endpoint,
             seq,
+            body.Length,
+            Sha256_16(body),
             result.NativeTier ?? "",
             result.NativeBody?.Length ?? 0,
+            diagnosticSrcLen,
+            diagnosticNativeBodyLen,
+            ssoReportBodyHash,
             result.Sign?.Length ?? 0,
-            result.Token?.Length ?? 0,
-            result.Extra?.Length ?? 0);
+            result.TokenLength ?? result.Token?.Length ?? 0,
+            result.Extra?.Length ?? 0,
+            calledRvas,
+            stateUpdates);
+
+        if (SignProvider.IsRoutedReportCommand(command) && (result.Extra == null || result.Extra.Length == 0))
+        {
+            _logger.LogWarning("SignServer SsoReport returned empty extra; QUA extra fallback was expected");
+        }
     }
 
     private void EnforceTier(string command, string? nativeTier)
@@ -370,16 +411,33 @@ public class OneBotSigner : SignProvider
 
         string? expected = command switch
         {
-            "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync" => "native-partial",
-            "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat" => "native-partial",
+            "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync" => "diagnostic-only",
+            "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat" => "diagnostic-only",
+            "trpc.qq_new_tech.status_svc.StatusService.Register" => "diagnostic-only",
             "trpc.o3.ecdh_access.EcdhAccess.SsoEstablishShareKey" => "manual-state",
             "trpc.o3.ecdh_access.EcdhAccess.SsoSecureAccess" => "manual-state",
+            "trpc.o3.report.Report.SsoReport" => "pure-calc-body",
             _ => null
         };
 
         if (expected != null && nativeTier != expected)
         {
             throw new InvalidOperationException($"Unexpected SignServer native_tier for {command}: {nativeTier}, expected {expected}");
+        }
+    }
+
+    private static void EnforceRoutedBodyRules(string command, SignResult result)
+    {
+        if (!SignProvider.IsRoutedReportCommand(command)) return;
+
+        if (result.NativeTier != "pure-calc-body")
+        {
+            throw new InvalidOperationException($"Unexpected SignServer native_tier for {command}: {result.NativeTier}, expected pure-calc-body");
+        }
+
+        if (result.NativeBody is not { Length: > 0 })
+        {
+            throw new InvalidOperationException("SignServer SsoReport did not return native_body");
         }
     }
 
@@ -407,6 +465,22 @@ public class OneBotSigner : SignProvider
         }
 
         return result;
+    }
+
+    private static JsonObject BuildContextHandles(SignServerProfile profile)
+    {
+        return new JsonObject
+        {
+            { "register_context", JsonSerializer.SerializeToNode(profile.OnlineState.RegisterContext) },
+            { "transinfo", JsonSerializer.SerializeToNode(profile.OnlineState.TransInfo) },
+            { "secure", new JsonObject() },
+            { "heartbeat", new JsonObject
+                {
+                    { "last_seq", profile.OnlineState.LastHeartbeatSeq },
+                    { "counter", profile.OnlineState.HeartbeatCounter }
+                }
+            }
+        };
     }
 
     private static JsonObject BuildTransInfoMetadata(object? reserveFields, SignServerProfile profile)
@@ -465,6 +539,53 @@ public class OneBotSigner : SignProvider
 
     private static string Sha256_16(byte[] bytes)
         => bytes.Length == 0 ? "" : Convert.ToHexString(SHA256.HashData(bytes))[..16];
+
+    private static JsonElement? TryParseJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.Clone();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? TryGetNestedString(JsonElement? element, params string[] path)
+    {
+        if (!TryGetNestedElement(element, out var value, path)) return null;
+        return value.ValueKind == JsonValueKind.String ? value.GetString() : value.GetRawText();
+    }
+
+    private static int? TryGetNestedInt(JsonElement? element, params string[] path)
+    {
+        if (!TryGetNestedElement(element, out var value, path)) return null;
+        return value.TryGetInt32(out int result) ? result : null;
+    }
+
+    private static string? TryGetRawProperty(JsonElement? element, string property)
+    {
+        if (element == null || element.Value.ValueKind != JsonValueKind.Object) return null;
+        return element.Value.TryGetProperty(property, out var value) ? value.GetRawText() : null;
+    }
+
+    private static bool TryGetNestedElement(JsonElement? element, out JsonElement value, params string[] path)
+    {
+        value = default;
+        if (element == null) return false;
+
+        value = element.Value;
+        foreach (var part in path)
+        {
+            if (value.ValueKind != JsonValueKind.Object || !value.TryGetProperty(part, out value)) return false;
+        }
+
+        return true;
+    }
 
     private static bool TryApplyOnlineStateFromResponse(SignServerProfile profile, JsonElement json)
     {

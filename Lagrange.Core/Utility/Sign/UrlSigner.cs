@@ -15,7 +15,12 @@ internal class UrlSigner : SignProvider
 
     private readonly bool _advancedMode;
 
-    public override bool UseNativeBodyForOnline => _advancedMode;
+    public override bool UseNativeBodyForOnline => false;
+
+    public override bool ShouldUseNativeBody(string command, SignResult result) =>
+        SignProvider.IsRoutedReportCommand(command) &&
+        result.NativeTier == "pure-calc-body" &&
+        result.NativeBody is { Length: > 0 };
 
     public UrlSigner(string? url)
     {
@@ -122,6 +127,30 @@ internal class UrlSigner : SignProvider
         };
 
         if (cmd != null) request["cmd"] = cmd;
+        if (context.Command == "trpc.o3.report.Report.SsoReport")
+        {
+            request["sso_report_source"] = new JsonObject
+            {
+                { "report_type", 1 },
+                { "brand", "Lenovo" },
+                { "model", context.DeviceInfo.DeviceName },
+                { "device_type", 2 },
+                { "version", context.AppInfo.CurrentVersion },
+                { "version_entries", new JsonArray
+                    {
+                        new JsonObject
+                        {
+                            { "group", "LinuxQQ" },
+                            { "old_version", context.AppInfo.CurrentVersion },
+                            { "group_id", 0 },
+                            { "new_version", context.AppInfo.AppClientVersion }
+                        }
+                    }
+                },
+                { "opaque_field4_hex", "" }
+            };
+        }
+
         return request;
     }
 
@@ -138,8 +167,11 @@ internal class UrlSigner : SignProvider
             Sign = string.IsNullOrEmpty(sign) ? null : Convert.FromHexString(sign),
             Extra = string.IsNullOrEmpty(extra) ? Array.Empty<byte>() : Convert.FromHexString(extra),
             Token = string.IsNullOrEmpty(token) ? "" : Encoding.UTF8.GetString(Convert.FromHexString(token)),
+            TokenLength = string.IsNullOrEmpty(token) ? 0 : Convert.FromHexString(token).Length,
             NativeBody = string.IsNullOrEmpty(nativeBody) ? null : Convert.FromHexString(nativeBody),
-            NativeTier = TryGetString(valueJson, "native_tier")
+            NativeTier = TryGetString(valueJson, "native_tier"),
+            ExtraFields = valueJson.TryGetProperty("extra_fields", out var extraFields) ? extraFields.GetRawText() : null,
+            Diagnostic = valueJson.TryGetProperty("diagnostic", out var diagnostic) ? diagnostic.GetRawText() : null
         };
     }
 
@@ -170,6 +202,7 @@ internal class UrlSigner : SignProvider
         "trpc.qq_new_tech.status_svc.StatusService.Register" => "online/status-register",
         "trpc.o3.ecdh_access.EcdhAccess.SsoEstablishShareKey" => "secure/establish-share-key",
         "trpc.o3.ecdh_access.EcdhAccess.SsoSecureAccess" => "secure/secure-access",
+        "trpc.o3.report.Report.SsoReport" => "report/sso-report",
         _ => null
     };
 
