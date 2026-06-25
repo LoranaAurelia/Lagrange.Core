@@ -160,7 +160,13 @@ public class OneBotSigner : SignProvider
                 { "transinfo", BuildTransInfoMetadata(context.ReserveFields, profile) }
             };
 
-            var requestJson = BuildRequestContext(profile, context.Keystore.Uin, context.Sequence, context.Payload, context.Command);
+            var requestJson = BuildRequestContext(
+                profile,
+                context.Keystore.Uin,
+                context.Sequence,
+                context.Payload,
+                context.Command,
+                includeContextHandles: true);
             requestJson["state_push"] = statePush;
 
             using var request = new HttpRequestMessage
@@ -192,7 +198,14 @@ public class OneBotSigner : SignProvider
     private SignResult SendSignRequest(string cmd, uint seq, byte[] body, SignRequestContext? context, bool legacy, string? route = null)
     {
         var profile = _profileStore.GetProfile();
-        var requestJson = BuildRequestContext(profile, context?.Keystore.Uin ?? 0, seq, body, legacy ? cmd : null, cmd);
+        var requestJson = BuildRequestContext(
+            profile,
+            context?.Keystore.Uin ?? 0,
+            seq,
+            body,
+            legacy ? cmd : null,
+            cmd,
+            includeContextHandles: route != null);
         string endpoint = route == null ? _signServer! : $"{_signServer!.TrimEnd('/')}/{route}";
         using var request = new HttpRequestMessage
         {
@@ -202,7 +215,12 @@ public class OneBotSigner : SignProvider
         };
 
         using var message = _client.Send(request);
-        if (message.StatusCode != HttpStatusCode.OK) throw new Exception($"Signer server returned a {message.StatusCode}");
+        if (message.StatusCode != HttpStatusCode.OK)
+        {
+            string responseBody = message.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+            string detail = string.IsNullOrWhiteSpace(responseBody) ? "" : $": {TrimForLog(responseBody, 512)}";
+            throw new Exception($"Signer server returned a {message.StatusCode}{detail}");
+        }
         var json = JsonDocument.Parse(message.Content.ReadAsStream()).RootElement;
 
         if (json.TryGetProperty("platform", out JsonElement platformJson))
@@ -238,7 +256,14 @@ public class OneBotSigner : SignProvider
         return result;
     }
 
-    private JsonObject BuildRequestContext(SignServerProfile profile, uint uin, uint seq, byte[] body, string? cmd, string? command = null)
+    private JsonObject BuildRequestContext(
+        SignServerProfile profile,
+        uint uin,
+        uint seq,
+        byte[] body,
+        string? cmd,
+        string? command = null,
+        bool includeContextHandles = false)
     {
         if (uin != 0 && profile.Identity.Uin != uin.ToString())
         {
@@ -262,11 +287,11 @@ public class OneBotSigner : SignProvider
             { "fake_hardware_model", environment.FakeHardwareModel },
             { "fake_os_release", environment.FakeOsRelease },
             { "fake_timezone", environment.FakeTimezone },
-            { "online_state", JsonSerializer.SerializeToNode(profile.OnlineState) },
-            { "context_handles", BuildContextHandles(profile) }
+            { "online_state", JsonSerializer.SerializeToNode(profile.OnlineState) }
         };
 
         if (cmd != null) request["cmd"] = cmd;
+        if (includeContextHandles) request["context_handles"] = BuildContextHandles(profile);
         if (command == "trpc.o3.report.Report.SsoReport")
         {
             request["sso_report_source"] = JsonSerializer.SerializeToNode(profile.SsoReportSource);
@@ -540,6 +565,9 @@ public class OneBotSigner : SignProvider
 
     private static string Sha256_16(byte[] bytes)
         => bytes.Length == 0 ? "" : Convert.ToHexString(SHA256.HashData(bytes))[..16];
+
+    private static string TrimForLog(string value, int maxLength)
+        => value.Length <= maxLength ? value : value[..maxLength];
 
     private static JsonElement? TryParseJson(string? json)
     {
