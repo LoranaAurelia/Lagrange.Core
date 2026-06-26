@@ -1,8 +1,8 @@
 using System.Reflection;
 using System.Runtime;
-using System.Runtime.InteropServices;
 using System.Text;
 using Lagrange.OneBot.Extensions;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 
 namespace Lagrange.OneBot;
@@ -11,16 +11,6 @@ internal abstract class Program
 {
     public static async Task Main(string[] args)
     {
-        // Determine Realm feature switch dynamically
-        // bool isArm64 = RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
-        bool? envDisableRealm = Environment.GetEnvironmentVariable("ONEBOT_DISABLE_REALM")?.ToLower() switch
-        {
-            "1" or "true" or "yes" => true,
-            "0" or "false" or "no" => false,
-            _ => null
-        };
-        Lagrange.OneBot.Utility.FeatureFlags.DisableRealm = envDisableRealm ?? true; // 改为默认禁用
-
         string? version = Assembly
             .GetAssembly(typeof(Program))
             ?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
@@ -30,12 +20,6 @@ internal abstract class Program
         Console.WriteLine("Lagrange.OneBot");
 
         Console.WriteLine($"Version: {version?[^40..] ?? "unknown"}\n");
-        if (Lagrange.OneBot.Utility.FeatureFlags.DisableRealm)
-        {
-            Console.WriteLine("Realm features disabled (runtime switch).");
-        }
-
-        
         // AutoUpdate
         var updater = new Updater.GithubUpdater();
         await updater.GetConfig();
@@ -97,11 +81,36 @@ internal abstract class Program
             return;
         }
 
-        await Host.CreateApplicationBuilder()
+        var builder = Host.CreateApplicationBuilder();
+        ApplyDatabaseFeatureFlag(builder.Configuration);
+
+        if (Lagrange.OneBot.Utility.FeatureFlags.DisableRealm)
+        {
+            Console.WriteLine("Realm features disabled.");
+        }
+
+        await builder
             .ConfigureLagrangeCore()
             .ConfigureOneBot()
             .Build()
             .InitializeMusicSigner() // Very ugly (
             .RunAsync();
+    }
+
+    private static void ApplyDatabaseFeatureFlag(IConfiguration configuration)
+    {
+#if ONEBOT_DISABLE_REALM
+        Lagrange.OneBot.Utility.FeatureFlags.DisableRealm = true;
+#else
+        bool enableDatabase = configuration.GetValue("Database:Enable", false);
+        bool? envDisableRealm = Environment.GetEnvironmentVariable("ONEBOT_DISABLE_REALM")?.ToLowerInvariant() switch
+        {
+            "1" or "true" or "yes" => true,
+            "0" or "false" or "no" => false,
+            _ => null
+        };
+
+        Lagrange.OneBot.Utility.FeatureFlags.DisableRealm = envDisableRealm ?? !enableDatabase;
+#endif
     }
 }
