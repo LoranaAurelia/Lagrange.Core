@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using Lagrange.Core.Message;
 using Lagrange.Core.Message.Entity;
+using Lagrange.OneBot.Core.Operation.Converters;
 
 namespace Lagrange.OneBot.Message.Entity;
 
@@ -9,7 +10,10 @@ public partial class FaceSegment(int id)
 {
     public FaceSegment() : this(0) { }
     
-    [JsonPropertyName("id")] [CQProperty] public string Id { get; set; } = id.ToString();
+    [JsonPropertyName("id")]
+    [JsonConverter(typeof(StringOrNumberConverter))]
+    [CQProperty]
+    public string Id { get; set; } = id.ToString();
     
     [JsonPropertyName("large")] [CQProperty] public bool? IsLarge { get; set; }
     

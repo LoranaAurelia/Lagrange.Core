@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using Lagrange.Core.Message;
 using Lagrange.Core.Message.Entity;
+using Lagrange.OneBot.Core.Operation.Converters;
 
 namespace Lagrange.OneBot.Message.Entity;
 
@@ -9,7 +10,10 @@ public partial class ForwardSegment(string name)
 {
     public ForwardSegment() : this("") { }
 
-    [JsonPropertyName("id")] [CQProperty] public string Name { get; set; } = name;
+    [JsonPropertyName("id")]
+    [JsonConverter(typeof(StringOrNumberConverter))]
+    [CQProperty]
+    public string Name { get; set; } = name;
 }
 
 [SegmentSubscriber(typeof(MultiMsgEntity), "forward")]
