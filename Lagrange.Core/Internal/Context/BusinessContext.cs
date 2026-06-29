@@ -6,6 +6,7 @@ using Lagrange.Core.Internal.Context.Logic.Implementation;
 using Lagrange.Core.Internal.Event;
 using Lagrange.Core.Internal.Packets;
 using Lagrange.Core.Internal.Service;
+using Lagrange.Core.Utility.Diagnostics;
 using Lagrange.Core.Utility.Extension;
 #pragma warning disable CS8618
 
@@ -95,6 +96,7 @@ internal class BusinessContext : ContextBase
     {
         await HandleOutgoingEvent(@event);
         var result = new List<ProtocolEvent>();
+        SsoPacket? currentResponse = null;
         
         try
         {
@@ -102,6 +104,7 @@ internal class BusinessContext : ContextBase
             foreach (var packet in packets)
             {
                 var returnVal = await Collection.Packet.SendPacket(packet);
+                currentResponse = returnVal;
                 var resolved = Collection.Service.ResolveEventByPacket(returnVal);
                 foreach (var protocol in resolved)
                 {
@@ -114,6 +117,7 @@ internal class BusinessContext : ContextBase
         {
             Collection.Log.LogWarning(Tag, $"Error when processing the event: {@event}");
             Collection.Log.LogWarning(Tag, e.ToString());
+            if (currentResponse != null) PacketDumpWriter.DumpParseErrorSsoPacket(Collection.Config, currentResponse, e);
         }
         
         return result;
@@ -195,6 +199,7 @@ internal class BusinessContext : ContextBase
             Collection.Log.LogWarning(Tag, e.Message);
             if (e.StackTrace is { } stackTrace) Collection.Log.LogWarning(Tag, stackTrace);
             Collection.Log.LogDebug(Tag, packet.Payload.ToArray().Hex());
+            PacketDumpWriter.DumpParseErrorSsoPacket(Collection.Config, packet, e);
         }
 
         return success;
