@@ -325,14 +325,14 @@ internal static class MessagePacker
                 message.ResponseHead.FromUid ?? string.Empty,
                 message.ResponseHead.ToUin,
                 message.ContentHead.NTMsgSeq ?? 0,
-                message.ContentHead.Sequence ?? 0,
+                LowUint32(message.ContentHead.Sequence),
                 messageId,
                 message.ContentHead.Type == 141 ? MessageChain.MessageType.Temp : MessageChain.MessageType.Friend)
 
             : new MessageChain(
                 message.ResponseHead.Grp.GroupUin,
                 message.ResponseHead.FromUin,
-                message.ContentHead.Sequence ?? 0,
+                LowUint32(message.ContentHead.Sequence),
                 messageId);
 
         if (message.Body?.RichText?.Elems is { } elems) chain.Elements.AddRange(elems);
@@ -369,5 +369,7 @@ internal static class MessagePacker
 
         return @base;
     }
+
+    private static uint LowUint32(ulong? value) => value.HasValue ? (uint)(value.Value & uint.MaxValue) : 0;
 
 }

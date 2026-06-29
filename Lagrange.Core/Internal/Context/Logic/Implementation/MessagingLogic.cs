@@ -14,6 +14,7 @@ using Lagrange.Core.Internal.Service;
 using Lagrange.Core.Message;
 using Lagrange.Core.Message.Entity;
 using Lagrange.Core.Message.Filter;
+using Lagrange.Core.Utility.Diagnostics;
 using ProtoBuf;
 using FriendPokeEvent = Lagrange.Core.Event.EventArg.FriendPokeEvent;
 using GroupPokeEvent = Lagrange.Core.Event.EventArg.GroupPokeEvent;
@@ -38,6 +39,7 @@ namespace Lagrange.Core.Internal.Context.Logic.Implementation;
 [EventSubscribe(typeof(GroupSysPokeEvent))]
 [EventSubscribe(typeof(GroupSysReactionEvent))]
 [EventSubscribe(typeof(GroupSysNameChangeEvent))]
+[EventSubscribe(typeof(GroupSysGreyTipEvent))]
 [EventSubscribe(typeof(FriendSysRecallEvent))]
 [EventSubscribe(typeof(FriendSysRequestEvent))]
 [EventSubscribe(typeof(GroupSysMemberEnterEvent))]
@@ -190,6 +192,13 @@ internal class MessagingLogic : LogicBase
             {
                 var pokeArgs = new GroupNameChangeEvent(nameChange.GroupUin, nameChange.Name);
                 Collection.Invoker.PostEvent(pokeArgs);
+                break;
+            }
+            case GroupSysGreyTipEvent greyTip:
+            {
+                Collection.Log.LogInfo(Tag,
+                    $"Unknown Group GreyTip: group={greyTip.GroupUin} subtype={greyTip.SubType} type={greyTip.Type} busi_type={greyTip.BusiType} templ_id={greyTip.TemplId} sequence={greyTip.MessageSequence} tips_seq_id={greyTip.TipsSeqId} detection={greyTip.Detection} error={greyTip.Error} text={greyTip.Text} url={greyTip.Url}");
+                PacketDumpWriter.DumpGreyTip(Collection.Config, greyTip);
                 break;
             }
             case FriendSysRequestEvent info:

@@ -130,6 +130,12 @@ internal class PushMessageService : BaseService<PushMessageEvent>
     private static void ProcessEvent0x2DC(Span<byte> payload, PushMsg msg, List<ProtocolEvent> extraEvents)
     {
         var pkgType = (Event0x2DCSubType)(msg.Message.ContentHead.SubType ?? 0);
+        if (msg.Message.Body?.MsgContent is { } rawContent &&
+            TryAddGreyTipFallback(extraEvents, rawContent, msg.Message.ContentHead.SubType ?? 0, skipKnownGreyTip: true))
+        {
+            return;
+        }
+
         switch (pkgType)
         {
             case Event0x2DCSubType.SubType16 when msg.Message.Body?.MsgContent is { } content:
@@ -209,71 +215,280 @@ internal class PushMessageService : BaseService<PushMessageEvent>
             }
             case Event0x2DCSubType.GroupGreyTipNotice21 when msg.Message.Body?.MsgContent is { } content:
             {
-                using var packet = new BinaryPacket(content);
-                _ = packet.ReadUint();  // group uin
-                _ = packet.ReadByte();  // unknown byte
-                var proto = packet.ReadBytes(Prefix.Uint16 | Prefix.LengthOnly);
-                var greytip = Serializer.Deserialize<NotifyMessageBody>(proto.AsSpan());
-
-                if (greytip.Type == 27) // essence
+                try
                 {
-                    var essenceMsg = greytip.EssenceMessage;
-                    var groupEssenceEvent = GroupSysEssenceEvent.Result(essenceMsg.GroupUin, essenceMsg.MsgSequence,
-                        essenceMsg.Random, essenceMsg.SetFlag, essenceMsg.MemberUin, essenceMsg.OperatorUin);
-                    extraEvents.Add(groupEssenceEvent);
-                    break;
+                    using var packet = new BinaryPacket(content);
+                    uint groupUin = packet.ReadUint();  // group uin
+                    _ = packet.ReadByte();  // unknown byte
+                    var proto = packet.ReadBytes(Prefix.Uint16 | Prefix.LengthOnly);
+                    var greytip = Serializer.Deserialize<NotifyMessageBody>(proto.AsSpan());
+
+                    if (greytip.Type == 27) // essence
+                    {
+                        var essenceMsg = greytip.EssenceMessage;
+                        var groupEssenceEvent = GroupSysEssenceEvent.Result(essenceMsg.GroupUin, essenceMsg.MsgSequence,
+                            essenceMsg.Random, essenceMsg.SetFlag, essenceMsg.MemberUin, essenceMsg.OperatorUin);
+                        extraEvents.Add(groupEssenceEvent);
+                        break;
+                    }
+
+                    if (greytip.Type == 32) // recall poke
+                    {
+                        var recallPoke = greytip.GroupRecallPoke;
+                        var @event = GroupSysRecallPokeEvent.Result(
+                            recallPoke.GroupUin,
+                            recallPoke.OperatorUid,
+                            recallPoke.TipsSeqId
+                        );
+                        extraEvents.Add(@event);
+                        break;
+                    }
+
+                    AddUnknownGreyTipEvent(extraEvents, groupUin, msg.Message.ContentHead.SubType ?? 0, greytip);
                 }
-
-                if (greytip.Type == 32) // recall poke
+                catch
                 {
-                    var recallPoke = greytip.GroupRecallPoke;
-                    var @event = GroupSysRecallPokeEvent.Result(
-                        recallPoke.GroupUin,
-                        recallPoke.OperatorUid,
-                        recallPoke.TipsSeqId
-                    );
-                    extraEvents.Add(@event);
+                    AddUnknownGreyTipEvent(extraEvents, content, msg.Message.ContentHead.SubType ?? 0);
                 }
 
                 break;
             }
             case Event0x2DCSubType.GroupGreyTipNotice20 when msg.Message.Body?.MsgContent is { } content:
             {
-                using var packet = new BinaryPacket(content);
-                uint groupUin = packet.ReadUint();  // group uin
-                _ = packet.ReadByte();  // unknown byte
-                var proto = packet.ReadBytes(Prefix.Uint16 | Prefix.LengthOnly);
-                var greyTip = Serializer.Deserialize<NotifyMessageBody>(proto.AsSpan());
-
-                var templates = greyTip.GeneralGrayTip.MsgTemplParam.ToDictionary(x => x.Name, x => x.Value);
-
-                if (!templates.TryGetValue("action_str", out var actionStr) && !templates.TryGetValue("alt_str1", out actionStr))
+                try
                 {
-                    actionStr = string.Empty;
+                    using var packet = new BinaryPacket(content);
+                    uint groupUin = packet.ReadUint();  // group uin
+                    _ = packet.ReadByte();  // unknown byte
+                    var proto = packet.ReadBytes(Prefix.Uint16 | Prefix.LengthOnly);
+                    var greyTip = Serializer.Deserialize<NotifyMessageBody>(proto.AsSpan());
+
+                    var templates = BuildTemplateMap(greyTip.GeneralGrayTip?.MsgTemplParam);
+
+                    if (!templates.TryGetValue("action_str", out var actionStr) && !templates.TryGetValue("alt_str1", out actionStr))
+                    {
+                        actionStr = string.Empty;
+                    }
+
+                    if (greyTip.GeneralGrayTip?.BusiType == 12 && // poke
+                        templates.TryGetValue("uin_str1", out var operatorUin) &&
+                        templates.TryGetValue("uin_str2", out var targetUin))
+                    {
+                        var groupPokeEvent = GroupSysPokeEvent.Result(
+                            groupUin,
+                            uint.Parse(operatorUin),
+                            uint.Parse(targetUin),
+                            actionStr,
+                            templates.GetValueOrDefault("suffix_str", string.Empty),
+                            templates.GetValueOrDefault("action_img_url", string.Empty),
+                            greyTip.MsgSequence,
+                            (ulong)msg.Message.ContentHead.Timestamp!.Value,
+                            greyTip.TipsSeqId
+                        );
+                        extraEvents.Add(groupPokeEvent);
+                        break;
+                    }
+
+                    AddUnknownGreyTipEvent(extraEvents, groupUin, msg.Message.ContentHead.SubType ?? 0, greyTip);
                 }
-
-                if (greyTip.GeneralGrayTip.BusiType == 12)  // poke
+                catch
                 {
-                    var groupPokeEvent = GroupSysPokeEvent.Result(
-                        groupUin,
-                        uint.Parse(templates["uin_str1"]),
-                        uint.Parse(templates["uin_str2"]),
-                        actionStr,
-                        templates["suffix_str"],
-                        templates["action_img_url"],
-                        greyTip.MsgSequence,
-                        (ulong)msg.Message.ContentHead.Timestamp!.Value,
-                        greyTip.TipsSeqId
-                    );
-                    extraEvents.Add(groupPokeEvent);
+                    AddUnknownGreyTipEvent(extraEvents, content, msg.Message.ContentHead.SubType ?? 0);
                 }
                 break;
             }
             default:
             {
+                if (msg.Message.Body?.MsgContent is { } content)
+                {
+                    TryAddGreyTipFallback(extraEvents, content, msg.Message.ContentHead.SubType ?? 0, skipKnownGreyTip: false);
+                }
                 break;
             }
         }
+    }
+
+    private static void AddUnknownGreyTipEvent(List<ProtocolEvent> extraEvents, byte[] content, uint subType)
+    {
+        if (!TryParseGreyTipContent(content, out var groupUin, out var greyTip, out var error))
+        {
+            if (TryScanGreyTipPayload(content, out var text, out var url, out var parameters))
+            {
+                extraEvents.Add(GroupSysGreyTipEvent.Result(0, subType, 0, 0, 0, 0, 0, text, url, parameters,
+                    content, "raw-scan", error));
+            }
+            return;
+        }
+
+        AddUnknownGreyTipEvent(extraEvents, groupUin, subType, greyTip, content, "notify-message-body", error);
+    }
+
+    private static void AddUnknownGreyTipEvent(List<ProtocolEvent> extraEvents, uint groupUin, uint subType,
+        NotifyMessageBody greyTip, byte[]? rawPayload = null, string detection = "notify-message-body", string? error = null)
+    {
+        var parameters = BuildTemplateMap(greyTip.GeneralGrayTip?.MsgTemplParam);
+        string text = ExtractGreyTipText(greyTip, parameters);
+        string url = ExtractGreyTipUrl(parameters);
+
+        extraEvents.Add(GroupSysGreyTipEvent.Result(
+            groupUin,
+            subType,
+            greyTip.Type,
+            greyTip.GeneralGrayTip?.BusiType ?? 0,
+            greyTip.GeneralGrayTip?.TemplId ?? 0,
+            greyTip.MsgSequence != 0 ? greyTip.MsgSequence : greyTip.GeneralGrayTip?.MsgInfo?.Sequence ?? 0,
+            greyTip.TipsSeqId != 0 ? greyTip.TipsSeqId : greyTip.GeneralGrayTip?.TipsSeqId ?? 0,
+            text,
+            url,
+            parameters,
+            rawPayload,
+            detection,
+            error));
+    }
+
+    private static bool TryAddGreyTipFallback(List<ProtocolEvent> extraEvents, byte[] content, uint subType, bool skipKnownGreyTip)
+    {
+        if (TryParseGreyTipContent(content, out var groupUin, out var greyTip, out var error))
+        {
+            if (!LooksLikeGreyTip(greyTip)) return false;
+            if (skipKnownGreyTip && IsKnownGreyTip(greyTip)) return false;
+            AddUnknownGreyTipEvent(extraEvents, groupUin, subType, greyTip, content, "notify-message-body", error);
+            return true;
+        }
+
+        if (!TryScanGreyTipPayload(content, out var text, out var url, out var parameters)) return false;
+
+        extraEvents.Add(GroupSysGreyTipEvent.Result(0, subType, 0, 0, 0, 0, 0, text, url, parameters,
+            content, "raw-scan", error));
+        return true;
+    }
+
+    private static bool IsKnownGreyTip(NotifyMessageBody greyTip)
+        => greyTip.Type is 27 or 32 || greyTip.GeneralGrayTip?.BusiType == 12;
+
+    private static bool LooksLikeGreyTip(NotifyMessageBody greyTip)
+        => greyTip.GeneralGrayTip != null || greyTip.Type is 27 or 32;
+
+    private static bool TryParseGreyTipContent(byte[] content, out uint groupUin, out NotifyMessageBody greyTip, out string? error)
+    {
+        groupUin = 0;
+        greyTip = null!;
+        error = null;
+
+        try
+        {
+            using var packet = new BinaryPacket(content);
+            groupUin = packet.ReadUint();
+            _ = packet.ReadByte();
+            var proto = packet.ReadBytes(Prefix.Uint16 | Prefix.LengthOnly);
+            greyTip = Serializer.Deserialize<NotifyMessageBody>(proto.AsSpan());
+            return true;
+        }
+        catch (Exception e)
+        {
+            error = e.Message;
+            return false;
+        }
+    }
+
+    private static Dictionary<string, string> BuildTemplateMap(TemplParam[]? parameters)
+    {
+        var result = new Dictionary<string, string>();
+        if (parameters == null) return result;
+
+        foreach (var parameter in parameters)
+        {
+            if (string.IsNullOrEmpty(parameter.Name)) continue;
+            result[parameter.Name] = parameter.Value ?? string.Empty;
+        }
+
+        return result;
+    }
+
+    private static bool TryScanGreyTipPayload(byte[] payload, out string text, out string url, out Dictionary<string, string> parameters)
+    {
+        string decoded = Encoding.UTF8.GetString(payload);
+        parameters = new Dictionary<string, string>();
+        text = ExtractAttribute(decoded, "txt") ?? ExtractReadableChinese(decoded);
+        url = ExtractAttribute(decoded, "jp") ?? ExtractMqqUrl(decoded);
+
+        if (!string.IsNullOrWhiteSpace(text)) parameters["text"] = text;
+        if (!string.IsNullOrWhiteSpace(url)) parameters["url"] = url;
+
+        bool looksLikeGreyTip =
+            decoded.Contains("<gtip", StringComparison.OrdinalIgnoreCase) ||
+            decoded.Contains("mqq_tips", StringComparison.OrdinalIgnoreCase) ||
+            decoded.Contains("mqq_url", StringComparison.OrdinalIgnoreCase) ||
+            decoded.Contains("mqqapi://", StringComparison.OrdinalIgnoreCase);
+
+        return looksLikeGreyTip || !string.IsNullOrWhiteSpace(text) || !string.IsNullOrWhiteSpace(url);
+    }
+
+    private static string? ExtractAttribute(string value, string name)
+    {
+        string marker = $"{name}=\"";
+        int start = value.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (start < 0) return null;
+
+        start += marker.Length;
+        int end = value.IndexOf('"', start);
+        return end <= start ? null : value[start..end];
+    }
+
+    private static string ExtractMqqUrl(string value)
+    {
+        int start = value.IndexOf("mqqapi://", StringComparison.OrdinalIgnoreCase);
+        if (start < 0) return string.Empty;
+
+        int end = start;
+        while (end < value.Length && value[end] > 0x20 && value[end] != '"' && value[end] != '<') end++;
+        return value[start..end];
+    }
+
+    private static string ExtractReadableChinese(string value)
+    {
+        var builder = new StringBuilder();
+        string best = string.Empty;
+
+        foreach (char ch in value)
+        {
+            if (ch is >= '\u4e00' and <= '\u9fff' || ch is >= '\uff00' and <= '\uffef' || ch is >= '\u3000' and <= '\u303f')
+            {
+                builder.Append(ch);
+                continue;
+            }
+
+            Flush();
+        }
+
+        Flush();
+        return best;
+
+        void Flush()
+        {
+            if (builder.Length > best.Length) best = builder.ToString();
+            builder.Clear();
+        }
+    }
+
+    private static string ExtractGreyTipText(NotifyMessageBody greyTip, IReadOnlyDictionary<string, string> parameters)
+    {
+        foreach (string key in new[] { "txt", "text", "mqq_tips", "action_str", "alt_str1", "title" })
+        {
+            if (parameters.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)) return value;
+        }
+
+        return greyTip.GeneralGrayTip?.Content ?? string.Empty;
+    }
+
+    private static string ExtractGreyTipUrl(IReadOnlyDictionary<string, string> parameters)
+    {
+        foreach (string key in new[] { "mqq_url", "url", "jp" })
+        {
+            if (parameters.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)) return value;
+        }
+
+        return string.Empty;
     }
 
     private static void ProcessEvent0x210(Span<byte> payload, PushMsg msg, List<ProtocolEvent> extraEvents)

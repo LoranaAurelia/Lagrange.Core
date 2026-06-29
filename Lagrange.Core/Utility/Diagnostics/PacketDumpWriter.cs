@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Security.Cryptography;
 using Lagrange.Core.Common;
+using Lagrange.Core.Internal.Event.Notify;
 using Lagrange.Core.Internal.Packets;
 using Lagrange.Core.Utility.Extension;
 
@@ -15,6 +16,57 @@ internal static class PacketDumpWriter
 
     public static void DumpParseErrorSsoPacket(BotConfig config, SsoPacket packet, Exception exception)
         => DumpSsoPacket(config, packet, "sso_frame_parse_error", exception);
+
+    public static void DumpGreyTip(BotConfig config, GroupSysGreyTipEvent greyTip)
+    {
+        if (!config.EnableFileLogging || greyTip.RawPayload.Length == 0) return;
+
+        try
+        {
+            string greyTipDirectory = Path.Combine(config.LogDirectory, "greytips");
+            Directory.CreateDirectory(greyTipDirectory);
+
+            string timestamp = DateTimeOffset.Now.ToString("yyyyMMdd-HHmmss-fff");
+            string fileBase = $"{timestamp}_{greyTip.GroupUin}_{greyTip.SubType}_{greyTip.Type}_{Sha256_16(greyTip.RawPayload)}";
+            string payloadPath = Path.Combine(greyTipDirectory, $"{fileBase}.payload.bin");
+            string metadataPath = Path.Combine(greyTipDirectory, $"{fileBase}.json");
+
+            var metadata = new
+            {
+                time = DateTimeOffset.Now,
+                kind = "group_greytip_fallback",
+                group_uin = greyTip.GroupUin,
+                sub_type = greyTip.SubType,
+                type = greyTip.Type,
+                busi_type = greyTip.BusiType,
+                templ_id = greyTip.TemplId,
+                message_sequence = greyTip.MessageSequence,
+                tips_seq_id = greyTip.TipsSeqId,
+                text = greyTip.Text,
+                url = greyTip.Url,
+                parameters = greyTip.Parameters,
+                detection = greyTip.Detection,
+                error = greyTip.Error,
+                payload_len = greyTip.RawPayload.Length,
+                payload_sha256_16 = Sha256_16(greyTip.RawPayload),
+                payload_hex = greyTip.RawPayload.Hex(true),
+                payload_file = Path.GetFileName(payloadPath)
+            };
+
+            lock (Lock)
+            {
+                File.WriteAllBytes(payloadPath, greyTip.RawPayload);
+                File.WriteAllText(metadataPath, JsonSerializer.Serialize(metadata, new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                }));
+            }
+        }
+        catch
+        {
+            // Packet dumping is diagnostics-only and must not affect packet dispatch.
+        }
+    }
 
     private static void DumpSsoPacket(BotConfig config, SsoPacket packet, string kind, Exception? exception = null)
     {
