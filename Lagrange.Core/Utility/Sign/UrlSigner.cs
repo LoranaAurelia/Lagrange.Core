@@ -18,8 +18,7 @@ internal class UrlSigner : SignProvider
     public override bool UseNativeBodyForOnline => false;
 
     public override bool ShouldUseNativeBody(string command, SignResult result) =>
-        SignProvider.IsRoutedReportCommand(command) &&
-        result.NativeTier == "pure-calc-body" &&
+        SignProvider.IsRoutedNativeBodyCommand(command) &&
         result.NativeBody is { Length: > 0 };
 
     public UrlSigner(string? url)
@@ -36,7 +35,6 @@ internal class UrlSigner : SignProvider
 
         if (!WhiteListCommand.Contains(cmd)) return null;
         if (_signServer == null) throw new Exception("Sign server is not configured");
-        if (!_advancedMode && SignProvider.IsRoutedOnlineCommand(cmd)) return null;
 
         using var request = new HttpRequestMessage
         {
@@ -71,12 +69,15 @@ internal class UrlSigner : SignProvider
     {
         if (!WhiteListCommand.Contains(context.Command)) return new SignResult();
         if (_signServer == null) throw new Exception("Sign server is not configured");
-        if (SignProvider.IsRoutedOnlineCommand(context.Command)) return new SignResult();
 
         string? route = _advancedMode ? GetRoutedEndpoint(context.Command) : null;
         if (route == null)
         {
-            if (SignProvider.IsRoutedOnlineCommand(context.Command)) return new SignResult();
+            if (SignProvider.IsRoutedNativeBodyCommand(context.Command))
+            {
+                throw new InvalidOperationException($"{context.Command} requires an advanced SignServer native_body route");
+            }
+
             return SendSignRequest(context, true);
         }
 
@@ -86,7 +87,11 @@ internal class UrlSigner : SignProvider
         }
         catch
         {
-            if (SignProvider.IsRoutedOnlineCommand(context.Command)) return new SignResult();
+            if (SignProvider.IsRoutedNativeBodyCommand(context.Command))
+            {
+                throw;
+            }
+
             return SendSignRequest(context, true);
         }
     }
@@ -128,6 +133,33 @@ internal class UrlSigner : SignProvider
         };
 
         if (cmd != null) request["cmd"] = cmd;
+        if (context.Command is "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync")
+        {
+            request["sso_info_sync_source"] = new JsonObject
+            {
+                { "body_hex", Convert.ToHexString(context.Body) }
+            };
+        }
+        if (context.Command is "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat")
+        {
+            request["heartbeat_source"] = new JsonObject
+            {
+                { "body_hex", Convert.ToHexString(context.Body) }
+            };
+        }
+        if (SignProvider.IsRoutedSecureCommand(context.Command))
+        {
+            request["secure_access_source"] = new JsonObject
+            {
+                { "body_hex", Convert.ToHexString(context.Body) }
+            };
+        }
+        if (context.Command == "OidbSvcTrpcTcp.0x102a_0" && TryGetDomains(context.Metadata, out var domains))
+        {
+            var array = new JsonArray();
+            foreach (var domain in domains) array.Add(domain);
+            request["oidb102a_source"] = new JsonObject { { "domains", array } };
+        }
         if (context.Command == "trpc.o3.report.Report.SsoReport")
         {
             request["sso_report_source"] = new JsonObject
@@ -204,8 +236,23 @@ internal class UrlSigner : SignProvider
         "trpc.o3.ecdh_access.EcdhAccess.SsoEstablishShareKey" => "secure/establish-share-key",
         "trpc.o3.ecdh_access.EcdhAccess.SsoSecureAccess" => "secure/secure-access",
         "trpc.o3.report.Report.SsoReport" => "report/sso-report",
+        "OidbSvcTrpcTcp.0x102a_1" => "oidb/102a/client-key",
+        "OidbSvcTrpcTcp.0x102a_0" => "oidb/102a/cookies",
         _ => null
     };
+
+    private static bool TryGetDomains(IReadOnlyDictionary<string, object>? metadata, out IEnumerable<string> domains)
+    {
+        domains = Array.Empty<string>();
+        if (metadata == null || !metadata.TryGetValue("oidb102a_domains", out var value)) return false;
+        if (value is IEnumerable<string> domainList)
+        {
+            domains = domainList;
+            return true;
+        }
+
+        return false;
+    }
 
     private static string? TryGetString(JsonElement element, string property)
         => element.TryGetProperty(property, out var value) && value.ValueKind != JsonValueKind.Null

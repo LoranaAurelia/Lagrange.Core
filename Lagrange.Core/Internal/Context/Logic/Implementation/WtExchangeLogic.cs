@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Web;
@@ -36,6 +37,7 @@ internal class WtExchangeLogic : LogicBase
     private const string QueryEvent = "wtlogin.trans_emp CMD0x12";
     private const string HeartbeatEvent = "Heartbeat.Alive";
     private const string SsoHeartbeatEvent = "SsoHeartBeat";
+    private static readonly List<string> KnownOidb102ADomains = new() { "qun.qq.com", "qzone.qq.com", "vip.qq.com" };
 
     internal WtExchangeLogic(ContextCollection collection) : base(collection)
     {
@@ -466,6 +468,11 @@ internal class WtExchangeLogic : LogicBase
 
                 var onlineEvent = new BotOnlineEvent(reason);
                 Collection.Invoker.PostEvent(onlineEvent);
+                if (Collection.Config.EnableSignServerTelemetryDebug)
+                {
+                    Collection.Log.LogInfo(Tag, "SignServer telemetry debug: scheduling SsoReport and OIDB 0x102a known sends");
+                }
+                _ = SendKnownOnlineTelemetry();
 
                 _reLoginTimer.Change(TimeSpan.FromDays(15), TimeSpan.FromDays(15));
                 Collection.Log.LogInfo(Tag, "AutoReLogin Enabled, session would be refreshed in 15 days period");
@@ -476,6 +483,80 @@ internal class WtExchangeLogic : LogicBase
 
         return false;
     }
+
+    private async Task SendKnownOnlineTelemetry()
+    {
+        try
+        {
+            if (Collection.Config.EnableSignServerTelemetryDebug)
+            {
+                Collection.Log.LogInfo(Tag, "SignServer telemetry debug: sending trpc.o3.report.Report.SsoReport");
+            }
+
+            bool ssoReportSent = await Collection.Business.PushEvent(SsoReportEvent.Create());
+            Collection.Log.LogInfo(Tag, $"SsoReport Sent: {ssoReportSent}");
+        }
+        catch (Exception e)
+        {
+            Collection.Log.LogWarning(Tag, $"SsoReport send failed: {e.Message}");
+        }
+
+        try
+        {
+            if (Collection.Config.EnableSignServerTelemetryDebug)
+            {
+                Collection.Log.LogInfo(Tag, "SignServer telemetry debug: sending OIDB 0x102a client-key request");
+            }
+
+            var clientKeyResult = await Collection.Business.SendEvent(FetchClientKeyEvent.Create());
+            Collection.Log.LogInfo(Tag, $"OIDB 0x102a client key fetched: {clientKeyResult.Count != 0}");
+            if (Collection.Config.EnableSignServerTelemetryDebug)
+            {
+                var cache = Collection.Keystore.Session.Oidb102AClientKey;
+                Collection.Log.LogInfo(Tag, cache == null
+                    ? "SignServer telemetry debug: OIDB 0x102a client-key cache is empty after request"
+                    : $"SignServer telemetry debug: OIDB 0x102a client-key len={cache.ClientKey.Length} sha256_16={HashString(cache.ClientKey)} raw_expiration={cache.RawExpiration} expire_at_utc={cache.ExpireAtUtc:O}");
+            }
+        }
+        catch (Exception e)
+        {
+            Collection.Log.LogWarning(Tag, $"OIDB 0x102a client key fetch failed: {e.Message}");
+        }
+
+        try
+        {
+            if (Collection.Config.EnableSignServerTelemetryDebug)
+            {
+                Collection.Log.LogInfo(Tag, $"SignServer telemetry debug: sending OIDB 0x102a cookies request domains={string.Join(",", KnownOidb102ADomains)}");
+            }
+
+            var cookieResult = await Collection.Business.SendEvent(FetchCookieEvent.Create(KnownOidb102ADomains));
+            Collection.Log.LogInfo(Tag, $"OIDB 0x102a cookies fetched: {cookieResult.Count != 0} domains={KnownOidb102ADomains.Count}");
+            if (Collection.Config.EnableSignServerTelemetryDebug)
+            {
+                foreach (var domain in KnownOidb102ADomains)
+                {
+                    if (Collection.Keystore.Session.Oidb102ACookies.TryGetValue(domain, out var cache))
+                    {
+                        Collection.Log.LogInfo(Tag, $"SignServer telemetry debug: OIDB 0x102a cookie domain={domain} len={cache.Cookie.Length} sha256_16={HashString(cache.Cookie)} expire_at_utc={cache.ExpireAtUtc:O}");
+                    }
+                    else
+                    {
+                        Collection.Log.LogInfo(Tag, $"SignServer telemetry debug: OIDB 0x102a cookie domain={domain} missing");
+                    }
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Collection.Log.LogWarning(Tag, $"OIDB 0x102a cookie fetch failed: {e.Message}");
+        }
+    }
+
+    private static string HashString(string value)
+        => string.IsNullOrEmpty(value)
+            ? ""
+            : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))[..16];
 
     private async Task<bool> FetchUnusual()
     {

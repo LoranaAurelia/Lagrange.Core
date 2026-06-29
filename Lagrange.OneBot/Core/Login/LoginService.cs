@@ -101,6 +101,7 @@ public class LoginService(IConfiguration configuration, ILogger<LoginService> lo
     public Task StopAsync(CancellationToken token)
     {
         _lagrange.Invoker.OnBotLogEvent -= BotLogHandler;
+        SaveKeystore();
         _lagrange.Dispose();
 
         return Task.CompletedTask;

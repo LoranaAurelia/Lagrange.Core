@@ -44,8 +44,7 @@ public class OneBotSigner : SignProvider
     public override bool StrictNativeTier => _strictNativeTier || _mode == "strict";
 
     public override bool ShouldUseNativeBody(string command, SignResult result) =>
-        SignProvider.IsRoutedReportCommand(command) &&
-        result.NativeTier == "pure-calc-body" &&
+        SignProvider.IsRoutedNativeBodyCommand(command) &&
         result.NativeBody is { Length: > 0 };
 
     public OneBotSigner(IConfiguration config, ILogger<OneBotSigner> logger, SignServerProfileStore profileStore)
@@ -87,6 +86,7 @@ public class OneBotSigner : SignProvider
         };
         version = _info.CurrentVersion;
         _advancedMode = ProbeAdvancedMode();
+        if (_advancedMode) FetchRuntimeManifest();
     }
 
     public override byte[]? Sign(string cmd, uint seq, byte[] body, [UnscopedRef] out byte[]? e, [UnscopedRef] out string? t)
@@ -96,7 +96,6 @@ public class OneBotSigner : SignProvider
 
         if (!WhiteListCommand.Contains(cmd)) return null;
         if (_signServer == null) throw new Exception("Sign server is not configured");
-        if (!_advancedMode && SignProvider.IsRoutedOnlineCommand(cmd)) return null;
 
         var result = SendSignRequest(cmd, seq, body, null, true);
         e = result.Extra;
@@ -108,12 +107,15 @@ public class OneBotSigner : SignProvider
     {
         if (!WhiteListCommand.Contains(context.Command)) return new SignResult();
         if (_signServer == null) throw new Exception("Sign server is not configured");
-        if (SignProvider.IsRoutedOnlineCommand(context.Command)) return new SignResult();
 
         string? route = _advancedMode ? GetRoutedEndpoint(context.Command) : null;
         if (route == null || _mode == "legacy")
         {
-            if (SignProvider.IsRoutedOnlineCommand(context.Command)) return new SignResult();
+            if (SignProvider.IsRoutedNativeBodyCommand(context.Command))
+            {
+                throw new InvalidOperationException($"{context.Command} requires an advanced SignServer native_body route");
+            }
+
             return SendSignRequest(context.Command, context.Sequence, context.Body, context, true);
         }
 
@@ -127,8 +129,12 @@ public class OneBotSigner : SignProvider
         }
         catch (Exception e) when (!StrictNativeTier)
         {
+            if (SignProvider.IsRoutedNativeBodyCommand(context.Command))
+            {
+                throw;
+            }
+
             _logger.LogWarning(e, "Routed SignServer endpoint failed for {Command}, falling back to legacy signing", context.Command);
-            if (SignProvider.IsRoutedOnlineCommand(context.Command)) return new SignResult();
             return SendSignRequest(context.Command, context.Sequence, context.Body, context, true);
         }
     }
@@ -142,7 +148,9 @@ public class OneBotSigner : SignProvider
             var profile = _profileStore.GetProfile();
             var payloadHash = Sha256_16(context.Payload);
             var reserveHash = Sha256_16(context.ReserveField);
-            UpdateProfileState(profile, context.ReserveFields, context.ReserveField);
+            UpdateProfileState(profile, context.Command, context.Sequence, context.Payload, context.ReserveFields, context.ReserveField);
+            if (!IsTrackedStatePushCommand(context.Command)) return;
+
             bool includeRawHex = _configuration.GetValue("SignServer:IncludeRawStatePushHex", false);
             var statePush = new JsonObject
             {
@@ -157,7 +165,8 @@ public class OneBotSigner : SignProvider
                 { "heartbeat_hex", "" },
                 { "reserve_len", context.ReserveField.Length },
                 { "reserve_sha256_16", reserveHash },
-                { "transinfo", BuildTransInfoMetadata(context.ReserveFields, profile) }
+                { "transinfo", BuildTransInfoMetadata(context.ReserveFields, profile, includeRawHex) },
+                { "summary", BuildPushSummary(context.Command, context.Payload, profile) }
             };
 
             var requestJson = BuildRequestContext(
@@ -166,6 +175,7 @@ public class OneBotSigner : SignProvider
                 context.Sequence,
                 context.Payload,
                 context.Command,
+                metadata: null,
                 includeContextHandles: true);
             requestJson["state_push"] = statePush;
 
@@ -195,6 +205,11 @@ public class OneBotSigner : SignProvider
         }
     }
 
+    private static bool IsTrackedStatePushCommand(string command) => command is
+        "trpc.msg.register_proxy.RegisterProxy.PushParams" or
+        "trpc.msg.register_proxy.RegisterProxy.InfoSyncPush" or
+        "ConfigPushSvc.PushReq";
+
     private SignResult SendSignRequest(string cmd, uint seq, byte[] body, SignRequestContext? context, bool legacy, string? route = null)
     {
         var profile = _profileStore.GetProfile();
@@ -205,6 +220,7 @@ public class OneBotSigner : SignProvider
             body,
             legacy ? cmd : null,
             cmd,
+            context?.Metadata,
             includeContextHandles: route != null);
         string endpoint = route == null ? _signServer! : $"{_signServer!.TrimEnd('/')}/{route}";
         using var request = new HttpRequestMessage
@@ -243,11 +259,20 @@ public class OneBotSigner : SignProvider
 
         var result = ParseSignResult(json);
         bool stateChanged = TryApplyOnlineStateFromResponse(profile, json);
+        if (cmd == "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync")
+        {
+            profile.OnlineState.LastSsoInfoSyncSeq = seq;
+            stateChanged = true;
+        }
+        if (cmd == "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat")
+        {
+            profile.OnlineState.HeartbeatCounter++;
+            profile.OnlineState.LastHeartbeatSeq = seq;
+            stateChanged = true;
+        }
         if (!string.IsNullOrEmpty(result.NativeTier))
         {
             profile.OnlineState.LastNativeTiers[cmd] = result.NativeTier;
-            if (cmd == "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync") profile.OnlineState.LastSsoInfoSyncSeq = seq;
-            if (cmd == "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat") profile.OnlineState.LastHeartbeatSeq = seq;
             stateChanged = true;
         }
 
@@ -263,12 +288,18 @@ public class OneBotSigner : SignProvider
         byte[] body,
         string? cmd,
         string? command = null,
+        IReadOnlyDictionary<string, object>? metadata = null,
         bool includeContextHandles = false)
     {
         if (uin != 0 && profile.Identity.Uin != uin.ToString())
         {
             profile.Identity.Uin = uin.ToString();
+            EnsureQimei(profile);
             _profileStore.Save(profile);
+        }
+        else
+        {
+            EnsureQimei(profile);
         }
 
         var environment = profile.Environment;
@@ -280,6 +311,8 @@ public class OneBotSigner : SignProvider
             { "src", Convert.ToHexString(body) },
             { "qua", profile.App.Qua },
             { "machine_id", profile.Identity.MachineId },
+            { "qimei36", profile.Identity.Qimei36 },
+            { "env_id_str", profile.Environment.EnvIdStr },
             { "fake_hostname", environment.FakeHostname },
             { "fake_proc_comm", environment.FakeProcComm },
             { "fake_proc_cmdline", environment.FakeProcCmdline },
@@ -287,11 +320,48 @@ public class OneBotSigner : SignProvider
             { "fake_hardware_model", environment.FakeHardwareModel },
             { "fake_os_release", environment.FakeOsRelease },
             { "fake_timezone", environment.FakeTimezone },
-            { "online_state", JsonSerializer.SerializeToNode(profile.OnlineState) }
+            { "device_profile", BuildDeviceProfile(profile) },
+            { "profile", BuildProfileSummary(profile) },
+            { "online_state", BuildOnlineState(profile, _configuration.GetValue("SignServer:IncludeRawStatePushHex", false)) }
         };
 
         if (cmd != null) request["cmd"] = cmd;
         if (includeContextHandles) request["context_handles"] = BuildContextHandles(profile);
+        if (command == "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync")
+        {
+            request["sso_info_sync_source"] = new JsonObject
+            {
+                { "body_hex", Convert.ToHexString(body) }
+            };
+        }
+        if (command == "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat")
+        {
+            bool buildMinimalBody = _configuration.GetValue("SignServer:HeartbeatBuildMinimalBody", false);
+            request["heartbeat_source"] = buildMinimalBody
+                ? new JsonObject
+                {
+                    { "build_minimal_body", true },
+                    { "heartbeat_type", 1 }
+                }
+                : new JsonObject
+                {
+                    { "body_hex", Convert.ToHexString(body) },
+                    { "heartbeat_type", 1 }
+                };
+        }
+        if (SignProvider.IsRoutedSecureCommand(command ?? ""))
+        {
+            request["secure_access_source"] = new JsonObject
+            {
+                { "body_hex", Convert.ToHexString(body) }
+            };
+        }
+        if (command == "OidbSvcTrpcTcp.0x102a_0" && TryGetDomains(metadata, out var domains))
+        {
+            var domainArray = new JsonArray();
+            foreach (var domain in domains) domainArray.Add(domain);
+            request["oidb102a_source"] = new JsonObject { { "domains", domainArray } };
+        }
         if (command == "trpc.o3.report.Report.SsoReport")
         {
             request["sso_report_source"] = JsonSerializer.SerializeToNode(profile.SsoReportSource);
@@ -382,6 +452,35 @@ public class OneBotSigner : SignProvider
         }
     }
 
+    private void FetchRuntimeManifest()
+    {
+        try
+        {
+            var profile = _profileStore.GetProfile();
+            if (profile.RuntimeManifest?.Version == version && profile.RuntimeManifest.Length > 0) return;
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"{_signServer!.TrimEnd('/')}/runtime-manifest");
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(
+                _configuration.GetValue("SignServer:AdvancedProbeTimeoutMs", 1500)));
+            using var response = _client.Send(request, cts.Token);
+            if (!response.IsSuccessStatusCode) return;
+
+            string text = response.Content.ReadAsStringAsync(cts.Token).GetAwaiter().GetResult();
+            profile.RuntimeManifest = new SignServerRuntimeManifestCache
+            {
+                Version = version,
+                FetchedAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                Length = text.Length,
+                Sha256_16 = Sha256_16(Encoding.UTF8.GetBytes(text))
+            };
+            _profileStore.Save(profile);
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "SignServer runtime-manifest fetch failed");
+        }
+    }
+
     private static string? GetRoutedEndpoint(string command) => command switch
     {
         "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync" => "online/sso-info-sync",
@@ -390,6 +489,8 @@ public class OneBotSigner : SignProvider
         "trpc.o3.ecdh_access.EcdhAccess.SsoEstablishShareKey" => "secure/establish-share-key",
         "trpc.o3.ecdh_access.EcdhAccess.SsoSecureAccess" => "secure/secure-access",
         "trpc.o3.report.Report.SsoReport" => "report/sso-report",
+        "OidbSvcTrpcTcp.0x102a_1" => "oidb/102a/client-key",
+        "OidbSvcTrpcTcp.0x102a_0" => "oidb/102a/cookies",
         _ => null
     };
 
@@ -437,12 +538,14 @@ public class OneBotSigner : SignProvider
 
         string? expected = command switch
         {
-            "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync" => "diagnostic-only",
-            "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat" => "diagnostic-only",
-            "trpc.qq_new_tech.status_svc.StatusService.Register" => "diagnostic-only",
+            "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync" => "online-sign",
+            "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat" => "online-sign",
+            "trpc.qq_new_tech.status_svc.StatusService.Register" => "online-sign",
             "trpc.o3.ecdh_access.EcdhAccess.SsoEstablishShareKey" => "manual-state",
             "trpc.o3.ecdh_access.EcdhAccess.SsoSecureAccess" => "manual-state",
             "trpc.o3.report.Report.SsoReport" => "pure-calc-body",
+            "OidbSvcTrpcTcp.0x102a_1" => "pure-calc-body",
+            "OidbSvcTrpcTcp.0x102a_0" => "pure-calc-body",
             _ => null
         };
 
@@ -454,17 +557,30 @@ public class OneBotSigner : SignProvider
 
     private static void EnforceRoutedBodyRules(string command, SignResult result)
     {
-        if (!SignProvider.IsRoutedReportCommand(command)) return;
+        if (!SignProvider.IsRoutedNativeBodyCommand(command)) return;
 
-        if (result.NativeTier != "pure-calc-body")
+        if (SignProvider.IsRoutedReportCommand(command) && result.NativeTier != "pure-calc-body")
         {
             throw new InvalidOperationException($"Unexpected SignServer native_tier for {command}: {result.NativeTier}, expected pure-calc-body");
         }
 
         if (result.NativeBody is not { Length: > 0 })
         {
-            throw new InvalidOperationException("SignServer SsoReport did not return native_body");
+            throw new InvalidOperationException($"SignServer {command} did not return native_body");
         }
+    }
+
+    private static bool TryGetDomains(IReadOnlyDictionary<string, object>? metadata, out IEnumerable<string> domains)
+    {
+        domains = Array.Empty<string>();
+        if (metadata == null || !metadata.TryGetValue("oidb102a_domains", out var value)) return false;
+        if (value is IEnumerable<string> domainList)
+        {
+            domains = domainList;
+            return true;
+        }
+
+        return false;
     }
 
     private static string? TryGetString(JsonElement element, string property)
@@ -509,12 +625,107 @@ public class OneBotSigner : SignProvider
         };
     }
 
-    private static JsonObject BuildTransInfoMetadata(object? reserveFields, SignServerProfile profile)
+    private static JsonObject BuildDeviceProfile(SignServerProfile profile)
+    {
+        var environment = profile.Environment;
+        return new JsonObject
+        {
+            { "hostname", environment.Hostname },
+            { "device_name", environment.DeviceName },
+            { "distro", environment.Distro },
+            { "kernel", environment.Kernel },
+            { "desktop_env", environment.DesktopEnv },
+            { "session_type", environment.SessionType },
+            { "vendor", environment.Vendor },
+            { "model", environment.Model },
+            { "fake_hostname", environment.FakeHostname },
+            { "fake_proc_comm", environment.FakeProcComm },
+            { "fake_proc_cmdline", environment.FakeProcCmdline },
+            { "fake_device_name", environment.FakeDeviceName },
+            { "fake_hardware_model", environment.FakeHardwareModel },
+            { "fake_os_release", environment.FakeOsRelease },
+            { "fake_timezone", environment.FakeTimezone },
+            { "locale_id", environment.LocaleId },
+            { "env_id_str", environment.EnvIdStr },
+            { "is_test_env", environment.IsTestEnv },
+            { "canary", environment.Canary }
+        };
+    }
+
+    private static JsonObject BuildProfileSummary(SignServerProfile profile)
+    {
+        return new JsonObject
+        {
+            { "schema_version", profile.SchemaVersion },
+            { "profile_id", profile.ProfileId },
+            { "wrapper_version", profile.WrapperVersion },
+            { "protocol", profile.Protocol },
+            { "created_at_unix", profile.CreatedAtUnix },
+            { "guid_hash", HashString(profile.Identity.Guid) },
+            { "machine_id", profile.Identity.MachineId },
+            { "qimei36_hash", HashString(profile.Identity.Qimei36) },
+            { "qimei36_len", profile.Identity.Qimei36.Length }
+        };
+    }
+
+    private static JsonObject BuildOnlineState(SignServerProfile profile, bool includeRaw)
+    {
+        var state = profile.OnlineState;
+        var variantCounts = new JsonObject();
+        foreach (var (key, value) in state.InfoSyncPushVariantCounts) variantCounts[key] = value;
+
+        var transInfo = new JsonObject();
+        foreach (var (key, value) in state.TransInfo) transInfo[key] = JsonSerializer.SerializeToNode(value);
+
+        var output = new JsonObject
+        {
+            { "online_push_flags", state.OnlinePushFlags },
+            { "heartbeat_counter", state.HeartbeatCounter },
+            { "last_push_command", state.LastPushCommand },
+            { "last_push_branch", state.LastPushBranch },
+            { "last_push_field1", state.LastPushField1 },
+            { "push_params_count", state.PushParamsCount },
+            { "push_params_last_field1", state.PushParamsLastField1 },
+            { "push_params_last_hash", state.PushParamsLastHash },
+            { "info_sync_push_count", state.InfoSyncPushCount },
+            { "info_sync_push_variant_counts", variantCounts },
+            { "info_sync_push_last_field3", state.InfoSyncPushLastField3 },
+            { "info_sync_push_last_field4", state.InfoSyncPushLastField4 },
+            { "info_sync_push_last_hash", state.InfoSyncPushLastHash },
+            { "config_push_count", state.ConfigPushCount },
+            { "config_push_last_hash", state.ConfigPushLastHash },
+            { "msf_login_notify_count", state.MsfLoginNotifyCount },
+            { "msf_login_notify_last_hash", state.MsfLoginNotifyLastHash },
+            { "last_sso_info_sync_seq", state.LastSsoInfoSyncSeq },
+            { "last_heartbeat_seq", state.LastHeartbeatSeq },
+            { "transinfo", transInfo },
+            { "register_context", JsonSerializer.SerializeToNode(state.RegisterContext) }
+        };
+
+        if (includeRaw)
+        {
+            var transInfoValues = new JsonObject();
+            foreach (var (key, value) in state.TransInfoValues) transInfoValues[key] = value;
+            output["transinfo_values"] = transInfoValues;
+            output["register_context_hex"] = state.RegisterContextHex;
+        }
+
+        return output;
+    }
+
+    private static JsonObject BuildTransInfoMetadata(object? reserveFields, SignServerProfile profile, bool includeRaw)
     {
         var output = new JsonObject();
         foreach (var (key, value) in profile.OnlineState.TransInfoValues)
         {
-            output[key] = value;
+            var bytes = Encoding.UTF8.GetBytes(value);
+            output[key] = includeRaw
+                ? value
+                : JsonSerializer.SerializeToNode(new SignServerStateHash
+                {
+                    Len = bytes.Length,
+                    Sha256_16 = Sha256_16(bytes)
+                });
         }
 
         if (reserveFields == null) return output;
@@ -525,7 +736,13 @@ public class OneBotSigner : SignProvider
         foreach (var (key, value) in transInfo)
         {
             var bytes = Encoding.UTF8.GetBytes(value);
-            output[key] = value;
+            output[key] = includeRaw
+                ? value
+                : JsonSerializer.SerializeToNode(new SignServerStateHash
+                {
+                    Len = bytes.Length,
+                    Sha256_16 = Sha256_16(bytes)
+                });
             profile.OnlineState.TransInfoValues[key] = value;
             profile.OnlineState.TransInfo[key] = new SignServerStateHash { Len = bytes.Length, Sha256_16 = Sha256_16(bytes) };
         }
@@ -533,8 +750,175 @@ public class OneBotSigner : SignProvider
         return output;
     }
 
-    private void UpdateProfileState(SignServerProfile profile, object? reserveFields, byte[] reserveField)
+    private static JsonObject BuildPushSummary(string command, byte[] payload, SignServerProfile profile)
     {
+        var payloadHash = Sha256_16(payload);
+        var summary = new JsonObject
+        {
+            { "command", command },
+            { "payload_len", payload.Length },
+            { "payload_sha256_16", payloadHash }
+        };
+
+        var fields = ReadTopLevelFields(payload);
+        if (fields.Count != 0)
+        {
+            var fieldCounts = new JsonObject();
+            foreach (var group in fields.GroupBy(field => field))
+            {
+                fieldCounts[group.Key.ToString()] = group.Count();
+            }
+
+            summary["top_level_field_counts"] = fieldCounts;
+        }
+
+        switch (command)
+        {
+            case "trpc.msg.register_proxy.RegisterProxy.PushParams":
+                profile.OnlineState.PushParamsCount++;
+                profile.OnlineState.PushParamsLastHash = payloadHash;
+                profile.OnlineState.PushParamsLastField1 = fields.Contains(1) ? "present" : null;
+                summary["field1"] = profile.OnlineState.PushParamsLastField1 ?? "";
+                break;
+            case "trpc.msg.register_proxy.RegisterProxy.InfoSyncPush":
+                profile.OnlineState.InfoSyncPushCount++;
+                profile.OnlineState.InfoSyncPushLastHash = payloadHash;
+                profile.OnlineState.InfoSyncPushLastField3 = fields.Contains(3) ? "present" : null;
+                profile.OnlineState.InfoSyncPushLastField4 = fields.Contains(4) ? "present" : null;
+                foreach (var field in fields)
+                {
+                    var key = $"field{field}";
+                    profile.OnlineState.InfoSyncPushVariantCounts[key] =
+                        profile.OnlineState.InfoSyncPushVariantCounts.GetValueOrDefault(key) + 1;
+                }
+
+                summary["field3"] = profile.OnlineState.InfoSyncPushLastField3 ?? "";
+                summary["field4"] = profile.OnlineState.InfoSyncPushLastField4 ?? "";
+                break;
+            case "ConfigPushSvc.PushReq":
+                profile.OnlineState.ConfigPushCount++;
+                profile.OnlineState.ConfigPushLastHash = payloadHash;
+                break;
+        }
+
+        if (command is "trpc.msg.register_proxy.RegisterProxy.PushParams" or
+            "trpc.msg.register_proxy.RegisterProxy.InfoSyncPush" or
+            "ConfigPushSvc.PushReq")
+        {
+            profile.OnlineState.LastPushCommand = command;
+        }
+
+        return summary;
+    }
+
+    private static List<int> ReadTopLevelFields(byte[] payload)
+    {
+        var fields = new List<int>();
+        int offset = 0;
+        while (offset < payload.Length)
+        {
+            if (!TryReadVarint(payload, ref offset, out ulong key)) break;
+            int fieldNumber = (int)(key >> 3);
+            int wireType = (int)(key & 0x07);
+            if (fieldNumber <= 0) break;
+            fields.Add(fieldNumber);
+
+            switch (wireType)
+            {
+                case 0:
+                    if (!TryReadVarint(payload, ref offset, out _)) return fields;
+                    break;
+                case 1:
+                    offset += 8;
+                    break;
+                case 2:
+                    if (!TryReadVarint(payload, ref offset, out ulong length)) return fields;
+                    offset += checked((int)length);
+                    break;
+                case 5:
+                    offset += 4;
+                    break;
+                default:
+                    return fields;
+            }
+
+            if (offset > payload.Length) break;
+        }
+
+        return fields;
+    }
+
+    private static bool TryReadVarint(byte[] bytes, ref int offset, out ulong value)
+    {
+        value = 0;
+        int shift = 0;
+        while (offset < bytes.Length && shift < 64)
+        {
+            byte current = bytes[offset++];
+            value |= (ulong)(current & 0x7f) << shift;
+            if ((current & 0x80) == 0) return true;
+            shift += 7;
+        }
+
+        return false;
+    }
+
+    private static void EnsureQimei(SignServerProfile profile)
+    {
+        if (!string.IsNullOrWhiteSpace(profile.Identity.Qimei36) &&
+            profile.Identity.Qimei36Uin == profile.Identity.Uin)
+        {
+            return;
+        }
+
+        if (!Guid.TryParse(profile.Identity.Guid, out var guid)) return;
+
+        profile.Identity.Qimei36 = SignServerProfile.GenerateQimei36(
+            string.IsNullOrWhiteSpace(profile.ProfileId) ? profile.Identity.Session : profile.ProfileId,
+            profile.Identity.Uin,
+            guid);
+        profile.Identity.Qimei36Uin = profile.Identity.Uin;
+    }
+
+    private void UpdateProfileState(
+        SignServerProfile profile,
+        string command,
+        uint sequence,
+        byte[] payload,
+        object? reserveFields,
+        byte[] reserveField)
+    {
+        if (SignProvider.IsRoutedSecureCommand(command))
+        {
+            profile.SecureState.LastCommand = command;
+            profile.SecureState.LastSeq = sequence;
+            profile.SecureState.LastPayload = new SignServerStateHash
+            {
+                Len = payload.Length,
+                Sha256_16 = Sha256_16(payload)
+            };
+            profile.SecureState.LastReserve = new SignServerStateHash
+            {
+                Len = reserveField.Length,
+                Sha256_16 = Sha256_16(reserveField)
+            };
+            if (command == "trpc.o3.ecdh_access.EcdhAccess.SsoEstablishShareKey") profile.SecureState.EstablishCount++;
+            if (command == "trpc.o3.ecdh_access.EcdhAccess.SsoSecureAccess") profile.SecureState.SecureAccessCount++;
+        }
+
+        if (SignProvider.IsRoutedOidb102ACommand(command))
+        {
+            profile.Oidb102AState.LastCommand = command;
+            profile.Oidb102AState.LastSeq = sequence;
+            profile.Oidb102AState.LastResponse = new SignServerStateHash
+            {
+                Len = payload.Length,
+                Sha256_16 = Sha256_16(payload)
+            };
+            if (command == "OidbSvcTrpcTcp.0x102a_1") profile.Oidb102AState.ClientKeyResponseCount++;
+            if (command == "OidbSvcTrpcTcp.0x102a_0") profile.Oidb102AState.CookieResponseCount++;
+        }
+
         if (reserveField.Length > 0)
         {
             profile.OnlineState.RegisterContext = new SignServerStateHash
@@ -542,12 +926,15 @@ public class OneBotSigner : SignProvider
                 Len = reserveField.Length,
                 Sha256_16 = Sha256_16(reserveField)
             };
-            profile.OnlineState.RegisterContextHex = Convert.ToHexString(reserveField);
+            profile.OnlineState.RegisterContextHex = _configuration.GetValue("SignServer:IncludeRawStatePushHex", false)
+                ? Convert.ToHexString(reserveField)
+                : "";
         }
 
         var transInfoProperty = reserveFields?.GetType().GetProperty("TransInfo");
         if (transInfoProperty?.GetValue(reserveFields) is IDictionary<string, string> transInfo)
         {
+            bool includeRawHex = _configuration.GetValue("SignServer:IncludeRawStatePushHex", false);
             foreach (var (key, value) in transInfo)
             {
                 var bytes = Encoding.UTF8.GetBytes(value);
@@ -556,7 +943,8 @@ public class OneBotSigner : SignProvider
                     Len = bytes.Length,
                     Sha256_16 = Sha256_16(bytes)
                 };
-                profile.OnlineState.TransInfoValues[key] = value;
+                if (includeRawHex) profile.OnlineState.TransInfoValues[key] = value;
+                else profile.OnlineState.TransInfoValues.Remove(key);
             }
         }
 
@@ -565,6 +953,9 @@ public class OneBotSigner : SignProvider
 
     private static string Sha256_16(byte[] bytes)
         => bytes.Length == 0 ? "" : Convert.ToHexString(SHA256.HashData(bytes))[..16];
+
+    private static string HashString(string value)
+        => string.IsNullOrEmpty(value) ? "" : Sha256_16(Encoding.UTF8.GetBytes(value));
 
     private static string TrimForLog(string value, int maxLength)
         => value.Length <= maxLength ? value : value[..maxLength];

@@ -39,6 +39,11 @@ public class BotConfig
     public bool EnableStatusRegister { get; set; } = false;
 
     /// <summary>
+    /// Log detailed diagnostics for confirmed SignServer online telemetry commands.
+    /// </summary>
+    public bool EnableSignServerTelemetryDebug { get; set; } = false;
+
+    /// <summary>
     /// Write runtime diagnostics and selected packet dumps to files.
     /// </summary>
     public bool EnableFileLogging { get; set; } = false;

@@ -48,6 +48,7 @@ public static class HostApplicationBuilderExtension
                     GetOptimumServer = configuration.GetValue("Account:GetOptimumServer", true),
                     AutoReLogin = configuration.GetValue("Account:AutoReLogin", true),
                     EnableStatusRegister = configuration.GetValue("SignServer:EnableStatusRegister", false),
+                    EnableSignServerTelemetryDebug = configuration.GetValue("SignServer:EnableTelemetryDebug", false),
                     EnableFileLogging = configuration.GetValue("Diagnostics:EnableFileLogging", false),
                     LogDirectory = configuration["Diagnostics:LogDirectory"] ?? "logs",
                     CustomSignProvider = services.GetRequiredService<OneBotSigner>()

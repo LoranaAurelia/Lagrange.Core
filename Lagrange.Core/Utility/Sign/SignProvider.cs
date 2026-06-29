@@ -50,6 +50,8 @@ public abstract class SignProvider
         "OidbSvcTrpcTcp.0xf67_1",
         "OidbSvcTrpcTcp.0xf67_5",
         "OidbSvcTrpcTcp.0x6d9_4",
+        "OidbSvcTrpcTcp.0x102a_0",
+        "OidbSvcTrpcTcp.0x102a_1",
         "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync",
         "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat",
         "trpc.qq_new_tech.status_svc.StatusService.Register"
@@ -77,6 +79,17 @@ public abstract class SignProvider
 
     public static bool IsRoutedReportCommand(string command) =>
         command == "trpc.o3.report.Report.SsoReport";
+
+    public static bool IsRoutedSecureCommand(string command) => command is
+        "trpc.o3.ecdh_access.EcdhAccess.SsoEstablishShareKey" or
+        "trpc.o3.ecdh_access.EcdhAccess.SsoSecureAccess";
+
+    public static bool IsRoutedOidb102ACommand(string command) => command is
+        "OidbSvcTrpcTcp.0x102a_0" or
+        "OidbSvcTrpcTcp.0x102a_1";
+
+    public static bool IsRoutedNativeBodyCommand(string command) =>
+        IsRoutedReportCommand(command) || IsRoutedSecureCommand(command) || IsRoutedOidb102ACommand(command);
 }
 
 public sealed class SignRequestContext
@@ -92,6 +105,8 @@ public sealed class SignRequestContext
     public Lagrange.Core.Common.BotDeviceInfo DeviceInfo { get; init; } = null!;
 
     public Lagrange.Core.Common.BotKeystore Keystore { get; init; } = null!;
+
+    public IReadOnlyDictionary<string, object>? Metadata { get; init; }
 }
 
 public sealed class SignResult

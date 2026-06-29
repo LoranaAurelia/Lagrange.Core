@@ -21,7 +21,7 @@ internal class FetchCookieService : BaseService<FetchCookieEvent>
         {
             Domain = input.Domains
         });
-        
+
         output = packet.Serialize();
         extraPackets = null;
         return true;
@@ -31,8 +31,27 @@ internal class FetchCookieService : BaseService<FetchCookieEvent>
         out FetchCookieEvent output, out List<ProtocolEvent>? extraEvents)
     {
         var packet = Serializer.Deserialize<OidbSvcTrpcTcpBase<OidbSvcTrpcTcp0x102A_0Response>>(input);
-        var cookies = packet.Body.Urls.Select(x => Encoding.UTF8.GetString(x.Value)).ToList();
-        
+        var fetchedAt = DateTime.UtcNow;
+        var expireAt = fetchedAt.AddDays(1);
+        var cookies = new List<string>(packet.Body.Urls.Count);
+
+        foreach (var url in packet.Body.Urls)
+        {
+            string cookie = Encoding.UTF8.GetString(url.Value);
+            cookies.Add(cookie);
+
+            if (!string.IsNullOrWhiteSpace(url.Key))
+            {
+                keystore.Session.Oidb102ACookies[url.Key] = new BotKeystore.Oidb102ACookieCache
+                {
+                    Domain = url.Key,
+                    Cookie = cookie,
+                    FetchedAtUtc = fetchedAt,
+                    ExpireAtUtc = expireAt
+                };
+            }
+        }
+
         output = FetchCookieEvent.Result((int)packet.ErrorCode, cookies);
         extraEvents = null;
         return true;

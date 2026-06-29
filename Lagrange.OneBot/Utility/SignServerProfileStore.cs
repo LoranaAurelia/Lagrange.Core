@@ -282,7 +282,13 @@ public sealed class SignServerProfile
 
     [JsonPropertyName("online_state")] public SignServerOnlineState OnlineState { get; set; } = new();
 
+    [JsonPropertyName("secure_state")] public SignServerSecureState SecureState { get; set; } = new();
+
+    [JsonPropertyName("oidb102a_state")] public SignServerOidb102AState Oidb102AState { get; set; } = new();
+
     [JsonPropertyName("sso_report_source")] public SignServerSsoReportSource SsoReportSource { get; set; } = new();
+
+    [JsonPropertyName("runtime_manifest")] public SignServerRuntimeManifestCache? RuntimeManifest { get; set; }
 
     public static SignServerProfile Create(string wrapperVersion, BotDeviceInfo? existing = null)
     {
@@ -295,10 +301,12 @@ public sealed class SignServerProfile
         var sessionSuffix = Convert.ToHexString(RandomNumberGenerator.GetBytes(4)).ToLowerInvariant();
         var template = SelectWeightedTemplate();
         var hostSuffix = RandomNumberGenerator.GetInt32(10, 99).ToString();
+        var profileId = $"lagrange-{wrapperVersion}-profile-{sessionSuffix}";
+        var qimei36 = GenerateQimei36(profileId, "0", guid);
 
         return new SignServerProfile
         {
-            ProfileId = $"lagrange-{wrapperVersion}-profile-{sessionSuffix}",
+            ProfileId = profileId,
             CreatedAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
             WrapperVersion = wrapperVersion,
             App = new SignServerProfileApp(),
@@ -307,7 +315,9 @@ public sealed class SignServerProfile
                 Session = $"lagrange-{wrapperVersion}-profile-{sessionSuffix}",
                 Guid = guid.ToString(),
                 MachineId = machineId,
-                MacAddress = mac
+                MacAddress = mac,
+                Qimei36 = qimei36,
+                Qimei36Uin = "0"
             },
             Environment = SignServerProfileEnvironment.FromTemplate(
                 template.HostPrefix,
@@ -319,6 +329,13 @@ public sealed class SignServerProfile
                 hostSuffix),
             SsoReportSource = SignServerSsoReportSource.FromTemplate(template.HardwareModel)
         };
+    }
+
+    internal static string GenerateQimei36(string profileSeed, string uin, Guid deviceGuid)
+    {
+        var input = $"qimei36-v1{profileSeed}{uin}{deviceGuid:N}";
+        return Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(input)))
+            .ToLowerInvariant()[..36];
     }
 
     private static EnvironmentTemplate SelectWeightedTemplate()
@@ -343,6 +360,17 @@ public sealed class SignServerProfileApp
     [JsonPropertyName("current_version")] public string CurrentVersion { get; set; } = "3.2.29-49738";
 
     [JsonPropertyName("platform")] public string Platform { get; set; } = "Linux";
+}
+
+public sealed class SignServerRuntimeManifestCache
+{
+    [JsonPropertyName("version")] public string Version { get; set; } = "";
+
+    [JsonPropertyName("fetched_at_unix")] public long FetchedAtUnix { get; set; }
+
+    [JsonPropertyName("length")] public int Length { get; set; }
+
+    [JsonPropertyName("sha256_16")] public string Sha256_16 { get; set; } = "";
 }
 
 public sealed class SignServerSsoReportSource
@@ -419,6 +447,10 @@ public sealed class SignServerProfileIdentity
     [JsonPropertyName("machine_id")] public string MachineId { get; set; } = "";
 
     [JsonPropertyName("mac_address")] public string MacAddress { get; set; } = "";
+
+    [JsonPropertyName("qimei36")] public string Qimei36 { get; set; } = "";
+
+    [JsonPropertyName("qimei36_uin")] public string Qimei36Uin { get; set; } = "";
 }
 
 public sealed class SignServerProfileEnvironment
@@ -437,6 +469,28 @@ public sealed class SignServerProfileEnvironment
     [JsonPropertyName("fake_os_release")] public string FakeOsRelease { get; set; } = "Linux 6.8.0-60-generic x86_64";
 
     [JsonPropertyName("fake_timezone")] public string FakeTimezone { get; set; } = "Asia/Shanghai";
+
+    [JsonPropertyName("hostname")] public string Hostname { get; set; } = "thinkpad";
+
+    [JsonPropertyName("device_name")] public string DeviceName { get; set; } = "ThinkPad T14 Gen 3";
+
+    [JsonPropertyName("distro")] public string Distro { get; set; } = "Debian GNU/Linux 12";
+
+    [JsonPropertyName("kernel")] public string Kernel { get; set; } = "6.1.0-23-amd64";
+
+    [JsonPropertyName("desktop_env")] public string DesktopEnv { get; set; } = "GNOME";
+
+    [JsonPropertyName("session_type")] public string SessionType { get; set; } = "x11";
+
+    [JsonPropertyName("vendor")] public string Vendor { get; set; } = "Lenovo";
+
+    [JsonPropertyName("model")] public string Model { get; set; } = "ThinkPad T14 Gen 3";
+
+    [JsonPropertyName("env_id_str")] public string EnvIdStr { get; set; } = "";
+
+    [JsonPropertyName("is_test_env")] public bool IsTestEnv { get; set; }
+
+    [JsonPropertyName("canary")] public string Canary { get; set; } = "";
 
     [JsonPropertyName("locale_id")] public int LocaleId { get; set; } = 2052;
 
@@ -460,10 +514,41 @@ public sealed class SignServerProfileEnvironment
             FakeHardwareModel = hardwareModel,
             FakeOsRelease = osRelease,
             FakeTimezone = timezone,
+            Hostname = $"{hostPrefix}-{hostSuffix}",
+            DeviceName = deviceName,
+            Distro = GuessDistro(osRelease),
+            Kernel = osRelease.Replace("Linux ", "").Replace(" x86_64", ""),
+            DesktopEnv = GuessDesktop(osRelease),
+            SessionType = "x11",
+            Vendor = SplitVendorModel(hardwareModel).Vendor,
+            Model = SplitVendorModel(hardwareModel).Model,
             LocaleId = 2052,
             VendorName = "",
             OsLower = "linux"
         };
+
+    private static string GuessDistro(string osRelease)
+    {
+        if (osRelease.Contains("bazzite", StringComparison.OrdinalIgnoreCase)) return "Bazzite";
+        if (osRelease.Contains("arch", StringComparison.OrdinalIgnoreCase)) return "Arch Linux";
+        if (osRelease.Contains("fc", StringComparison.OrdinalIgnoreCase)) return "Fedora Linux";
+        if (osRelease.Contains("generic", StringComparison.OrdinalIgnoreCase)) return "Ubuntu 24.04 LTS";
+        if (osRelease.Contains("desktop", StringComparison.OrdinalIgnoreCase)) return "UOS Desktop";
+        return "Debian GNU/Linux 12";
+    }
+
+    private static string GuessDesktop(string osRelease)
+    {
+        if (osRelease.Contains("bazzite", StringComparison.OrdinalIgnoreCase)) return "KDE";
+        if (osRelease.Contains("desktop", StringComparison.OrdinalIgnoreCase)) return "DDE";
+        return "GNOME";
+    }
+
+    private static (string Vendor, string Model) SplitVendorModel(string hardwareModel)
+    {
+        var parts = hardwareModel.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length == 2 ? (parts[0], parts[1]) : ("Generic", hardwareModel);
+    }
 }
 
 public sealed class SignServerOnlineState
@@ -515,6 +600,34 @@ public sealed class SignServerOnlineState
     [JsonPropertyName("register_context")] public SignServerStateHash RegisterContext { get; set; } = new();
 
     [JsonPropertyName("register_context_hex")] public string RegisterContextHex { get; set; } = "";
+}
+
+public sealed class SignServerSecureState
+{
+    [JsonPropertyName("last_command")] public string? LastCommand { get; set; }
+
+    [JsonPropertyName("last_seq")] public uint LastSeq { get; set; }
+
+    [JsonPropertyName("last_payload")] public SignServerStateHash LastPayload { get; set; } = new();
+
+    [JsonPropertyName("last_reserve")] public SignServerStateHash LastReserve { get; set; } = new();
+
+    [JsonPropertyName("establish_count")] public uint EstablishCount { get; set; }
+
+    [JsonPropertyName("secure_access_count")] public uint SecureAccessCount { get; set; }
+}
+
+public sealed class SignServerOidb102AState
+{
+    [JsonPropertyName("last_command")] public string? LastCommand { get; set; }
+
+    [JsonPropertyName("last_seq")] public uint LastSeq { get; set; }
+
+    [JsonPropertyName("last_response")] public SignServerStateHash LastResponse { get; set; } = new();
+
+    [JsonPropertyName("client_key_response_count")] public uint ClientKeyResponseCount { get; set; }
+
+    [JsonPropertyName("cookie_response_count")] public uint CookieResponseCount { get; set; }
 }
 
 public sealed class SignServerStateHash

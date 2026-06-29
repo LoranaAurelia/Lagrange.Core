@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using Lagrange.Core.Common;
 using Lagrange.Core.Internal.Event;
+using Lagrange.Core.Internal.Event.System;
 using Lagrange.Core.Internal.Packets;
 using Lagrange.Core.Internal.Service;
 using Lagrange.Core.Utility.Diagnostics;
@@ -71,11 +72,17 @@ internal class ServiceContext : ContextBase
 
             if (success && binary != null)
             {
-                result.Add(new SsoPacket(attribute.PacketType, attribute.Command, (uint)_sequenceProvider.GetNewSequence(), binary.ToArray()));
+                result.Add(new SsoPacket(attribute.PacketType, attribute.Command, (uint)_sequenceProvider.GetNewSequence(), binary.ToArray())
+                {
+                    SignMetadata = BuildSignMetadata(protocolEvent)
+                });
 
                 if (extraPackets is { } extra)
                 {
-                    var packets = extra.Select(e => new SsoPacket(attribute.PacketType, attribute.Command, (uint)_sequenceProvider.GetNewSequence(), e.ToArray()));
+                    var packets = extra.Select(e => new SsoPacket(attribute.PacketType, attribute.Command, (uint)_sequenceProvider.GetNewSequence(), e.ToArray())
+                    {
+                        SignMetadata = BuildSignMetadata(protocolEvent)
+                    });
                     result.AddRange(packets);
                 }
 
@@ -84,6 +91,19 @@ internal class ServiceContext : ContextBase
         }
 
         return result;
+    }
+
+    private static IReadOnlyDictionary<string, object>? BuildSignMetadata(ProtocolEvent protocolEvent)
+    {
+        if (protocolEvent is FetchCookieEvent fetchCookie)
+        {
+            return new Dictionary<string, object>
+            {
+                ["oidb102a_domains"] = fetchCookie.Domains
+            };
+        }
+
+        return null;
     }
 
     /// <summary>

@@ -25,7 +25,8 @@ internal static class SsoPacker
             Body = packet.Payload.ToArray(),
             AppInfo = appInfo,
             DeviceInfo = device,
-            Keystore = keystore
+            Keystore = keystore,
+            Metadata = packet.SignMetadata
         });
         var payload = signProvider.ShouldUseNativeBody(packet.Command, signResult) &&
                       signResult.NativeBody is { Length: > 0 }
@@ -44,7 +45,7 @@ internal static class SsoPacker
         };
         var stream = new MemoryStream();
         Serializer.Serialize(stream, signature);
-        
+
         writer.Barrier( w => w// Barrier is used to calculate the length of the packet header only
             .WriteUint(packet.Sequence) // sequence
             .WriteUint((uint)appInfo.SubAppId) // appId
@@ -57,7 +58,7 @@ internal static class SsoPacker
             .WriteBytes(Array.Empty<byte>(), Prefix.Uint32 | Prefix.WithPrefix) // TODO: unknown
             .WriteString(appInfo.CurrentVersion, Prefix.Uint16 | Prefix.WithPrefix) // Actually at wtlogin.trans_emp, this string is empty and only prefix 00 02 is given, but we can just simply ignore that situation
             .WriteBytes(stream.ToArray(), Prefix.Uint32 | Prefix.WithPrefix), Prefix.Uint32 | Prefix.WithPrefix); // packet end
-        
+
         return writer.WriteBytes(payload, Prefix.Uint32 | Prefix.WithPrefix);
     }
 
@@ -68,7 +69,7 @@ internal static class SsoPacker
     {
         var head = packet.ReadBytes(Prefix.Uint32 | Prefix.WithPrefix);
         var headReader = new BinaryPacket(head);
-        
+
         uint sequence = headReader.ReadUint();
         int retCode = headReader.ReadInt();
         string extra = headReader.ReadString(Prefix.Uint32 | Prefix.WithPrefix);
@@ -97,8 +98,8 @@ internal static class SsoPacker
             1 => ZCompression.ZDecompress(body, false),
             _ => throw new Exception($"Unknown compression type: {isCompressed}")
         };
-        
-        return retCode == 0 
+
+        return retCode == 0
             ? new SsoPacket(12, command, sequence, raw)
             {
                 ReserveField = reserveField,
