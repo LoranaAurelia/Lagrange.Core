@@ -564,7 +564,15 @@ internal class WtExchangeLogic : LogicBase
             Collection.Log.LogWarning(Tag, $"OIDB 0x102a cookie fetch failed: {e.Message}");
         }
 
-        if (!forceSsoReport && refreshedOidb102A) await SendSsoReport();
+        if (refreshedOidb102A)
+        {
+            if (forceSsoReport)
+            {
+                await Task.Delay(Random.Shared.Next(1000, 3001));
+            }
+
+            await SendSsoReport();
+        }
     }
 
     private async Task SendSsoReport()

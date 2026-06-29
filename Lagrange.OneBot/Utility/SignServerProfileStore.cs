@@ -627,6 +627,10 @@ public sealed class SignServerOidb102AState
 
     [JsonPropertyName("last_response")] public SignServerStateHash LastResponse { get; set; } = new();
 
+    [JsonPropertyName("client_key_request_count")] public uint ClientKeyRequestCount { get; set; }
+
+    [JsonPropertyName("cookie_request_count")] public uint CookieRequestCount { get; set; }
+
     [JsonPropertyName("client_key_response_count")] public uint ClientKeyResponseCount { get; set; }
 
     [JsonPropertyName("cookie_response_count")] public uint CookieResponseCount { get; set; }

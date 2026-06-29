@@ -937,8 +937,8 @@ public class OneBotSigner : SignProvider
                 Len = payload.Length,
                 Sha256_16 = Sha256_16(payload)
             };
-            if (command == "OidbSvcTrpcTcp.0x102a_1") profile.Oidb102AState.ClientKeyResponseCount++;
-            if (command == "OidbSvcTrpcTcp.0x102a_0") profile.Oidb102AState.CookieResponseCount++;
+            if (command == "OidbSvcTrpcTcp.0x102a_1") profile.Oidb102AState.ClientKeyRequestCount++;
+            if (command == "OidbSvcTrpcTcp.0x102a_0") profile.Oidb102AState.CookieRequestCount++;
         }
 
         if (reserveField.Length > 0)
