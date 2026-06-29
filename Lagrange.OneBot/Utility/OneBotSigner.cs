@@ -536,22 +536,22 @@ public class OneBotSigner : SignProvider
     {
         if (!StrictNativeTier) return;
 
-        string? expected = command switch
+        string[]? expected = command switch
         {
-            "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync" => "online-sign",
-            "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat" => "online-sign",
-            "trpc.qq_new_tech.status_svc.StatusService.Register" => "online-sign",
-            "trpc.o3.ecdh_access.EcdhAccess.SsoEstablishShareKey" => "manual-state",
-            "trpc.o3.ecdh_access.EcdhAccess.SsoSecureAccess" => "manual-state",
-            "trpc.o3.report.Report.SsoReport" => "pure-calc-body",
-            "OidbSvcTrpcTcp.0x102a_1" => "pure-calc-body",
-            "OidbSvcTrpcTcp.0x102a_0" => "pure-calc-body",
+            "trpc.msg.register_proxy.RegisterProxy.SsoInfoSync" => ["online-sign"],
+            "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat" => ["online-sign"],
+            "trpc.qq_new_tech.status_svc.StatusService.Register" => ["online-sign"],
+            "trpc.o3.ecdh_access.EcdhAccess.SsoEstablishShareKey" => ["manual-state"],
+            "trpc.o3.ecdh_access.EcdhAccess.SsoSecureAccess" => ["manual-state"],
+            "trpc.o3.report.Report.SsoReport" => ["pure-calc-body"],
+            "OidbSvcTrpcTcp.0x102a_1" => ["client-body-hook-sign", "pure-calc-body"],
+            "OidbSvcTrpcTcp.0x102a_0" => ["pure-calc-body", "client-body-hook-sign"],
             _ => null
         };
 
-        if (expected != null && nativeTier != expected)
+        if (expected != null && !expected.Contains(nativeTier))
         {
-            throw new InvalidOperationException($"Unexpected SignServer native_tier for {command}: {nativeTier}, expected {expected}");
+            throw new InvalidOperationException($"Unexpected SignServer native_tier for {command}: {nativeTier}, expected one of [{string.Join(", ", expected)}]");
         }
     }
 
@@ -564,11 +564,21 @@ public class OneBotSigner : SignProvider
             throw new InvalidOperationException($"Unexpected SignServer native_tier for {command}: {result.NativeTier}, expected pure-calc-body");
         }
 
-        if (result.NativeBody is not { Length: > 0 })
+        if (result.NativeBody == null)
         {
             throw new InvalidOperationException($"SignServer {command} did not return native_body");
         }
+
+        if (result.NativeBody.Length == 0 && !AllowsEmptyNativeBody(command))
+        {
+            throw new InvalidOperationException($"SignServer {command} returned empty native_body");
+        }
     }
+
+    private static bool AllowsEmptyNativeBody(string command) => command switch
+    {
+        _ => false
+    };
 
     private static bool TryGetDomains(IReadOnlyDictionary<string, object>? metadata, out IEnumerable<string> domains)
     {
