@@ -29,7 +29,7 @@ internal class OperationLogic : LogicBase
 
         foreach (string domain in domains)
         {
-            if (TryGetCachedCookie(domain, now, out string? cookie) && cookie != null) cached[domain] = cookie;
+            if (Collection.Keystore.Session.TryGetFreshOidb102ACookie(domain, now, out string? cookie) && cookie != null) cached[domain] = cookie;
             else missing.Add(domain);
         }
 
@@ -50,7 +50,7 @@ internal class OperationLogic : LogicBase
         var result = new List<string>(domains.Count);
         foreach (string domain in domains)
         {
-            if (TryGetCachedCookie(domain, DateTime.UtcNow, out string? cookie) && cookie != null) result.Add(cookie);
+            if (Collection.Keystore.Session.TryGetFreshOidb102ACookie(domain, DateTime.UtcNow, out string? cookie) && cookie != null) result.Add(cookie);
             else if (cached.TryGetValue(domain, out cookie)) result.Add(cookie);
         }
 
@@ -554,44 +554,11 @@ internal class OperationLogic : LogicBase
 
     public async Task<string?> GetClientKey()
     {
-        if (TryGetCachedClientKey(DateTime.UtcNow, out string? clientKey)) return clientKey;
+        if (Collection.Keystore.Session.TryGetFreshOidb102AClientKey(DateTime.UtcNow, out string? clientKey)) return clientKey;
 
         var clientKeyEvent = FetchClientKeyEvent.Create();
         var events = await Collection.Business.SendEvent(clientKeyEvent);
         return events.Count == 0 ? null : ((FetchClientKeyEvent)events[0]).ClientKey;
-    }
-
-    private bool TryGetCachedClientKey(DateTime nowUtc, out string? clientKey)
-    {
-        var cache = Collection.Keystore.Session.Oidb102AClientKey;
-        if (cache == null || string.IsNullOrWhiteSpace(cache.ClientKey))
-        {
-            clientKey = null;
-            return false;
-        }
-
-        if (cache.ExpireAtUtc != null && cache.ExpireAtUtc.Value <= nowUtc.AddSeconds(30))
-        {
-            clientKey = null;
-            return false;
-        }
-
-        clientKey = cache.ClientKey;
-        return true;
-    }
-
-    private bool TryGetCachedCookie(string domain, DateTime nowUtc, out string? cookie)
-    {
-        if (!Collection.Keystore.Session.Oidb102ACookies.TryGetValue(domain, out var cache) ||
-            string.IsNullOrWhiteSpace(cache.Cookie) ||
-            cache.ExpireAtUtc <= nowUtc.AddSeconds(30))
-        {
-            cookie = null;
-            return false;
-        }
-
-        cookie = cache.Cookie;
-        return true;
     }
 
     public async Task<bool> SetGroupRequest(uint groupUin, ulong sequence, uint type, GroupRequestOperate operate, string reason)

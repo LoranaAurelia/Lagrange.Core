@@ -68,6 +68,8 @@ public class BotKeystore
     [Serializable]
     public class WtLoginSession
     {
+        private static readonly TimeSpan Oidb102AStaleWindow = TimeSpan.FromSeconds(90);
+
         public byte[] D2Key { get; set; } = new byte[16];
         public byte[] D2 { get; set; } = Array.Empty<byte>();
         public byte[] Tgt { get; set; } = Array.Empty<byte>();
@@ -91,6 +93,53 @@ public class BotKeystore
         public Oidb102AClientKeyCache? Oidb102AClientKey { get; set; }
 
         public Dictionary<string, Oidb102ACookieCache> Oidb102ACookies { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public bool TryGetFreshOidb102AClientKey(DateTime nowUtc, out string? clientKey)
+        {
+            if (Oidb102AClientKey == null || string.IsNullOrWhiteSpace(Oidb102AClientKey.ClientKey))
+            {
+                clientKey = null;
+                return false;
+            }
+
+            if (Oidb102AClientKey.ExpireAtUtc != null &&
+                Oidb102AClientKey.ExpireAtUtc.Value <= nowUtc.Add(Oidb102AStaleWindow))
+            {
+                clientKey = null;
+                return false;
+            }
+
+            clientKey = Oidb102AClientKey.ClientKey;
+            return true;
+        }
+
+        public bool NeedOidb102AClientKeyRefresh(DateTime nowUtc)
+            => !TryGetFreshOidb102AClientKey(nowUtc, out _);
+
+        public bool TryGetFreshOidb102ACookie(string domain, DateTime nowUtc, out string? cookie)
+        {
+            if (!Oidb102ACookies.TryGetValue(domain, out var cache) ||
+                string.IsNullOrWhiteSpace(cache.Cookie) ||
+                cache.ExpireAtUtc <= nowUtc.Add(Oidb102AStaleWindow))
+            {
+                cookie = null;
+                return false;
+            }
+
+            cookie = cache.Cookie;
+            return true;
+        }
+
+        public List<string> GetMissingOrExpiredOidb102ACookieDomains(IEnumerable<string> domains, DateTime nowUtc)
+        {
+            var missing = new List<string>();
+            foreach (var domain in domains)
+            {
+                if (!TryGetFreshOidb102ACookie(domain, nowUtc, out _)) missing.Add(domain);
+            }
+
+            return missing;
+        }
 
         internal byte[]? NoPicSig { get; set; } // size: 16, may be from Tlv19, for Tlv16A
 

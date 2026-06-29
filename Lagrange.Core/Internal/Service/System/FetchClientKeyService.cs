@@ -46,7 +46,7 @@ internal class FetchClientKeyService : BaseService<FetchClientKeyEvent>
 
     private static DateTime? ResolveExpiration(uint expiration, DateTime fetchedAtUtc)
     {
-        if (expiration == 0) return null;
+        if (expiration == 0) return fetchedAtUtc.AddMinutes(30);
 
         long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         if (expiration > now - 86400) return DateTimeOffset.FromUnixTimeSeconds(expiration).UtcDateTime;

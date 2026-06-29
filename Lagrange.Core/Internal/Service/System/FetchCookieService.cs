@@ -33,7 +33,7 @@ internal class FetchCookieService : BaseService<FetchCookieEvent>
     {
         var packet = Serializer.Deserialize<OidbSvcTrpcTcpBase<OidbSvcTrpcTcp0x102A_0Response>>(input);
         var fetchedAt = DateTime.UtcNow;
-        var expireAt = fetchedAt.AddDays(1);
+        var expireAt = fetchedAt.AddMinutes(20);
         var urls = packet.Body?.Urls ?? new List<OidbProperty>();
         var cookies = new List<string>(urls.Count);
 

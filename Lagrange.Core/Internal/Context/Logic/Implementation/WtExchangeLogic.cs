@@ -37,6 +37,7 @@ internal class WtExchangeLogic : LogicBase
     private const string QueryEvent = "wtlogin.trans_emp CMD0x12";
     private const string HeartbeatEvent = "Heartbeat.Alive";
     private const string SsoHeartbeatEvent = "SsoHeartBeat";
+    private const string OnlineTelemetryEvent = "OnlineTelemetry";
     private static readonly List<string> KnownOidb102ADomains = new() { "qun.qq.com", "qzone.qq.com", "vip.qq.com" };
 
     internal WtExchangeLogic(ContextCollection collection) : base(collection)
@@ -473,6 +474,7 @@ internal class WtExchangeLogic : LogicBase
                     Collection.Log.LogInfo(Tag, "SignServer telemetry debug: scheduling SsoReport and OIDB 0x102a known sends");
                 }
                 _ = SendKnownOnlineTelemetry();
+                Collection.Scheduler.Interval(OnlineTelemetryEvent, 30 * 60 * 1000, async () => await SendKnownOnlineTelemetry());
 
                 _reLoginTimer.Change(TimeSpan.FromDays(15), TimeSpan.FromDays(15));
                 Collection.Log.LogInfo(Tag, "AutoReLogin Enabled, session would be refreshed in 15 days period");
@@ -503,19 +505,26 @@ internal class WtExchangeLogic : LogicBase
 
         try
         {
-            if (Collection.Config.EnableSignServerTelemetryDebug)
+            if (Collection.Keystore.Session.NeedOidb102AClientKeyRefresh(DateTime.UtcNow))
             {
-                Collection.Log.LogInfo(Tag, "SignServer telemetry debug: sending OIDB 0x102a client-key request");
-            }
+                if (Collection.Config.EnableSignServerTelemetryDebug)
+                {
+                    Collection.Log.LogInfo(Tag, "SignServer telemetry debug: sending OIDB 0x102a client-key request");
+                }
 
-            var clientKeyResult = await Collection.Business.SendEvent(FetchClientKeyEvent.Create());
-            Collection.Log.LogInfo(Tag, $"OIDB 0x102a client key fetched: {clientKeyResult.Count != 0}");
-            if (Collection.Config.EnableSignServerTelemetryDebug)
+                var clientKeyResult = await Collection.Business.SendEvent(FetchClientKeyEvent.Create());
+                Collection.Log.LogInfo(Tag, $"OIDB 0x102a client key fetched: {clientKeyResult.Count != 0}");
+                if (Collection.Config.EnableSignServerTelemetryDebug)
+                {
+                    var cache = Collection.Keystore.Session.Oidb102AClientKey;
+                    Collection.Log.LogInfo(Tag, cache == null
+                        ? "SignServer telemetry debug: OIDB 0x102a client-key cache is empty after request"
+                        : $"SignServer telemetry debug: OIDB 0x102a client-key len={cache.ClientKey.Length} sha256_16={HashString(cache.ClientKey)} raw_expiration={cache.RawExpiration} expire_at_utc={cache.ExpireAtUtc:O}");
+                }
+            }
+            else if (Collection.Config.EnableSignServerTelemetryDebug)
             {
-                var cache = Collection.Keystore.Session.Oidb102AClientKey;
-                Collection.Log.LogInfo(Tag, cache == null
-                    ? "SignServer telemetry debug: OIDB 0x102a client-key cache is empty after request"
-                    : $"SignServer telemetry debug: OIDB 0x102a client-key len={cache.ClientKey.Length} sha256_16={HashString(cache.ClientKey)} raw_expiration={cache.RawExpiration} expire_at_utc={cache.ExpireAtUtc:O}");
+                Collection.Log.LogInfo(Tag, "SignServer telemetry debug: OIDB 0x102a client-key cache is fresh, skip refresh");
             }
         }
         catch (Exception e)
@@ -525,16 +534,27 @@ internal class WtExchangeLogic : LogicBase
 
         try
         {
-            if (Collection.Config.EnableSignServerTelemetryDebug)
+            var missingDomains = Collection.Keystore.Session.GetMissingOrExpiredOidb102ACookieDomains(KnownOidb102ADomains, DateTime.UtcNow);
+            if (missingDomains.Count == 0)
             {
-                Collection.Log.LogInfo(Tag, $"SignServer telemetry debug: sending OIDB 0x102a cookies request domains={string.Join(",", KnownOidb102ADomains)}");
+                if (Collection.Config.EnableSignServerTelemetryDebug)
+                {
+                    Collection.Log.LogInfo(Tag, "SignServer telemetry debug: OIDB 0x102a cookie cache is fresh, skip refresh");
+                }
+
+                return;
             }
 
-            var cookieResult = await Collection.Business.SendEvent(FetchCookieEvent.Create(KnownOidb102ADomains));
-            Collection.Log.LogInfo(Tag, $"OIDB 0x102a cookies fetched: {cookieResult.Count != 0} domains={KnownOidb102ADomains.Count}");
             if (Collection.Config.EnableSignServerTelemetryDebug)
             {
-                foreach (var domain in KnownOidb102ADomains)
+                Collection.Log.LogInfo(Tag, $"SignServer telemetry debug: sending OIDB 0x102a cookies request domains={string.Join(",", missingDomains)}");
+            }
+
+            var cookieResult = await Collection.Business.SendEvent(FetchCookieEvent.Create(missingDomains));
+            Collection.Log.LogInfo(Tag, $"OIDB 0x102a cookies fetched: {cookieResult.Count != 0} domains={missingDomains.Count}");
+            if (Collection.Config.EnableSignServerTelemetryDebug)
+            {
+                foreach (var domain in missingDomains)
                 {
                     if (Collection.Keystore.Session.Oidb102ACookies.TryGetValue(domain, out var cache))
                     {
