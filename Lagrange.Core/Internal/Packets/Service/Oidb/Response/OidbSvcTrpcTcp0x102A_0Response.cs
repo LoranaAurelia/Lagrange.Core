@@ -9,5 +9,5 @@ namespace Lagrange.Core.Internal.Packets.Service.Oidb.Response;
 [ProtoContract]
 internal class OidbSvcTrpcTcp0x102A_0Response
 {
-    [ProtoMember(1)] public List<OidbProperty> Urls { get; set; }
+    [ProtoMember(1)] public List<OidbProperty> Urls { get; set; } = new();
 }

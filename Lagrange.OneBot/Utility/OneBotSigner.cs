@@ -528,7 +528,7 @@ public class OneBotSigner : SignProvider
 
         if (SignProvider.IsRoutedReportCommand(command) && (result.Extra == null || result.Extra.Length == 0))
         {
-            _logger.LogWarning("SignServer SsoReport returned empty extra; QUA extra fallback was expected");
+            _logger.LogDebug("SignServer SsoReport returned empty extra; QUA extra fallback was expected");
         }
     }
 

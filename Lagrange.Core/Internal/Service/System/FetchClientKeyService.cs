@@ -28,15 +28,18 @@ internal class FetchClientKeyService : BaseService<FetchClientKeyEvent>
     {
         var packet = Serializer.Deserialize<OidbSvcTrpcTcpBase<OidbSvcTrpcTcp0x102A_1Response>>(input);
         var fetchedAt = DateTime.UtcNow;
+        string clientKey = packet.Body?.ClientKey ?? "";
+        uint expiration = packet.Body?.Expiration ?? 0;
+
         keystore.Session.Oidb102AClientKey = new BotKeystore.Oidb102AClientKeyCache
         {
-            ClientKey = packet.Body.ClientKey,
-            RawExpiration = packet.Body.Expiration,
+            ClientKey = clientKey,
+            RawExpiration = expiration,
             FetchedAtUtc = fetchedAt,
-            ExpireAtUtc = ResolveExpiration(packet.Body.Expiration, fetchedAt)
+            ExpireAtUtc = ResolveExpiration(expiration, fetchedAt)
         };
 
-        output = FetchClientKeyEvent.Result(0, packet.Body.ClientKey, packet.Body.Expiration);
+        output = FetchClientKeyEvent.Result((int)packet.ErrorCode, clientKey, expiration);
         extraEvents = null;
         return true;
     }

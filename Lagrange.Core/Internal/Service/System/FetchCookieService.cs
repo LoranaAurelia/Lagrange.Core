@@ -3,6 +3,7 @@ using Lagrange.Core.Common;
 using Lagrange.Core.Internal.Event;
 using Lagrange.Core.Internal.Event.System;
 using Lagrange.Core.Internal.Packets.Service.Oidb;
+using Lagrange.Core.Internal.Packets.Service.Oidb.Generics;
 using Lagrange.Core.Internal.Packets.Service.Oidb.Request;
 using Lagrange.Core.Internal.Packets.Service.Oidb.Response;
 using Lagrange.Core.Utility.Extension;
@@ -33,11 +34,16 @@ internal class FetchCookieService : BaseService<FetchCookieEvent>
         var packet = Serializer.Deserialize<OidbSvcTrpcTcpBase<OidbSvcTrpcTcp0x102A_0Response>>(input);
         var fetchedAt = DateTime.UtcNow;
         var expireAt = fetchedAt.AddDays(1);
-        var cookies = new List<string>(packet.Body.Urls.Count);
+        var urls = packet.Body?.Urls ?? new List<OidbProperty>();
+        var cookies = new List<string>(urls.Count);
 
-        foreach (var url in packet.Body.Urls)
+        foreach (var url in urls)
         {
-            string cookie = Encoding.UTF8.GetString(url.Value);
+            if (url == null) continue;
+
+            string cookie = url.Value is { Length: > 0 } value
+                ? Encoding.UTF8.GetString(value)
+                : "";
             cookies.Add(cookie);
 
             if (!string.IsNullOrWhiteSpace(url.Key))
