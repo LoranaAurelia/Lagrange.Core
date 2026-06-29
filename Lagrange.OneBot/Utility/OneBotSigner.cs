@@ -157,7 +157,7 @@ public class OneBotSigner : SignProvider
                 { "command", context.Command },
                 { "seq", context.Sequence },
                 { "payload_len", context.Payload.Length },
-                { "payload_sha256_16", payloadHash },
+                { "payload_sha256_16", BuildHashSummary(context.Payload) },
                 { "reserve_hex", includeRawHex ? Convert.ToHexString(context.ReserveField) : "" },
                 { "pb_extra_hex", "" },
                 { "register_context_hex", includeRawHex ? profile.OnlineState.RegisterContextHex : "" },
@@ -598,10 +598,20 @@ public class OneBotSigner : SignProvider
         var result = new List<SignStateUpdate>();
         foreach (var update in updates.EnumerateArray())
         {
+            int? length = null;
+            if (update.TryGetProperty("length", out var lengthJson) && lengthJson.TryGetInt32(out int parsedLength))
+            {
+                length = parsedLength;
+            }
+            else if (update.TryGetProperty("len", out var lenJson) && lenJson.TryGetInt32(out int parsedLen))
+            {
+                length = parsedLen;
+            }
+
             result.Add(new SignStateUpdate
             {
                 Kind = TryGetString(update, "kind"),
-                Len = update.TryGetProperty("len", out var len) && len.TryGetInt32(out int parsedLen) ? parsedLen : null,
+                Len = length,
                 Sha256_16 = TryGetString(update, "sha256_16")
             });
         }
@@ -611,17 +621,15 @@ public class OneBotSigner : SignProvider
 
     private static JsonObject BuildContextHandles(SignServerProfile profile)
     {
+        var transInfo = new JsonObject();
+        foreach (var (key, value) in profile.OnlineState.TransInfo) transInfo[key] = BuildHashSummary(value);
+
         return new JsonObject
         {
-            { "register_context", JsonSerializer.SerializeToNode(profile.OnlineState.RegisterContext) },
-            { "transinfo", JsonSerializer.SerializeToNode(profile.OnlineState.TransInfo) },
-            { "secure", new JsonObject() },
-            { "heartbeat", new JsonObject
-                {
-                    { "last_seq", profile.OnlineState.LastHeartbeatSeq },
-                    { "counter", profile.OnlineState.HeartbeatCounter }
-                }
-            }
+            { "register_context", BuildHashSummary(profile.OnlineState.RegisterContext) },
+            { "transinfo", transInfo },
+            { "secure", BuildHashSummary(profile.SecureState.LastReserve) },
+            { "heartbeat", BuildHashSummary(Array.Empty<byte>()) }
         };
     }
 
@@ -675,7 +683,7 @@ public class OneBotSigner : SignProvider
         foreach (var (key, value) in state.InfoSyncPushVariantCounts) variantCounts[key] = value;
 
         var transInfo = new JsonObject();
-        foreach (var (key, value) in state.TransInfo) transInfo[key] = JsonSerializer.SerializeToNode(value);
+        foreach (var (key, value) in state.TransInfo) transInfo[key] = BuildHashSummary(value);
 
         var output = new JsonObject
         {
@@ -699,7 +707,7 @@ public class OneBotSigner : SignProvider
             { "last_sso_info_sync_seq", state.LastSsoInfoSyncSeq },
             { "last_heartbeat_seq", state.LastHeartbeatSeq },
             { "transinfo", transInfo },
-            { "register_context", JsonSerializer.SerializeToNode(state.RegisterContext) }
+            { "register_context", BuildHashSummary(state.RegisterContext) }
         };
 
         if (includeRaw)
@@ -721,11 +729,7 @@ public class OneBotSigner : SignProvider
             var bytes = Encoding.UTF8.GetBytes(value);
             output[key] = includeRaw
                 ? value
-                : JsonSerializer.SerializeToNode(new SignServerStateHash
-                {
-                    Len = bytes.Length,
-                    Sha256_16 = Sha256_16(bytes)
-                });
+                : BuildHashSummary(bytes);
         }
 
         if (reserveFields == null) return output;
@@ -738,11 +742,7 @@ public class OneBotSigner : SignProvider
             var bytes = Encoding.UTF8.GetBytes(value);
             output[key] = includeRaw
                 ? value
-                : JsonSerializer.SerializeToNode(new SignServerStateHash
-                {
-                    Len = bytes.Length,
-                    Sha256_16 = Sha256_16(bytes)
-                });
+                : BuildHashSummary(bytes);
             profile.OnlineState.TransInfoValues[key] = value;
             profile.OnlineState.TransInfo[key] = new SignServerStateHash { Len = bytes.Length, Sha256_16 = Sha256_16(bytes) };
         }
@@ -810,6 +810,18 @@ public class OneBotSigner : SignProvider
 
         return summary;
     }
+
+    private static JsonObject BuildHashSummary(byte[] bytes) => new()
+    {
+        { "length", bytes.Length },
+        { "sha256_16", Sha256_16(bytes) }
+    };
+
+    private static JsonObject BuildHashSummary(SignServerStateHash hash) => new()
+    {
+        { "length", hash.Len },
+        { "sha256_16", hash.Sha256_16 }
+    };
 
     private static List<int> ReadTopLevelFields(byte[] payload)
     {
