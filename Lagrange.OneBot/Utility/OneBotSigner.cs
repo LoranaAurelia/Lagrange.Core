@@ -932,7 +932,7 @@ public class OneBotSigner : SignProvider
         {
             profile.Oidb102AState.LastCommand = command;
             profile.Oidb102AState.LastSeq = sequence;
-            profile.Oidb102AState.LastResponse = new SignServerStateHash
+            profile.Oidb102AState.LastRequest = new SignServerStateHash
             {
                 Len = payload.Length,
                 Sha256_16 = Sha256_16(payload)

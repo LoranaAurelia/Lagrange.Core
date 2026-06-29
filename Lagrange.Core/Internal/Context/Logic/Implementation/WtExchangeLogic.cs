@@ -465,6 +465,7 @@ internal class WtExchangeLogic : LogicBase
                     }
                 }
 
+                Collection.Scheduler.Cancel(SsoHeartbeatEvent);
                 Collection.Scheduler.Interval(SsoHeartbeatEvent, (int)(4.5 * 60 * 1000), heartbeatDelegate);
 
                 var onlineEvent = new BotOnlineEvent(reason);
@@ -473,7 +474,8 @@ internal class WtExchangeLogic : LogicBase
                 {
                     Collection.Log.LogInfo(Tag, "SignServer telemetry debug: scheduling SsoReport and OIDB 0x102a known sends");
                 }
-                _ = SendKnownOnlineTelemetry();
+                _ = SendKnownOnlineTelemetry(true);
+                Collection.Scheduler.Cancel(OnlineTelemetryEvent);
                 Collection.Scheduler.Interval(OnlineTelemetryEvent, 30 * 60 * 1000, async () => await SendKnownOnlineTelemetry());
 
                 _reLoginTimer.Change(TimeSpan.FromDays(15), TimeSpan.FromDays(15));
@@ -486,22 +488,10 @@ internal class WtExchangeLogic : LogicBase
         return false;
     }
 
-    private async Task SendKnownOnlineTelemetry()
+    private async Task SendKnownOnlineTelemetry(bool forceSsoReport = false)
     {
-        try
-        {
-            if (Collection.Config.EnableSignServerTelemetryDebug)
-            {
-                Collection.Log.LogInfo(Tag, "SignServer telemetry debug: sending trpc.o3.report.Report.SsoReport");
-            }
-
-            bool ssoReportSent = await Collection.Business.PushEvent(SsoReportEvent.Create());
-            Collection.Log.LogInfo(Tag, $"SsoReport Sent: {ssoReportSent}");
-        }
-        catch (Exception e)
-        {
-            Collection.Log.LogWarning(Tag, $"SsoReport send failed: {e.Message}");
-        }
+        bool refreshedOidb102A = false;
+        if (forceSsoReport) await SendSsoReport();
 
         try
         {
@@ -514,6 +504,7 @@ internal class WtExchangeLogic : LogicBase
 
                 var clientKeyResult = await Collection.Business.SendEvent(FetchClientKeyEvent.Create());
                 Collection.Log.LogInfo(Tag, $"OIDB 0x102a client key fetched: {clientKeyResult.Count != 0}");
+                refreshedOidb102A |= clientKeyResult.Count != 0;
                 if (Collection.Config.EnableSignServerTelemetryDebug)
                 {
                     var cache = Collection.Keystore.Session.Oidb102AClientKey;
@@ -541,28 +532,29 @@ internal class WtExchangeLogic : LogicBase
                 {
                     Collection.Log.LogInfo(Tag, "SignServer telemetry debug: OIDB 0x102a cookie cache is fresh, skip refresh");
                 }
-
-                return;
             }
-
-            if (Collection.Config.EnableSignServerTelemetryDebug)
+            else
             {
-                Collection.Log.LogInfo(Tag, $"SignServer telemetry debug: sending OIDB 0x102a cookies request domains={string.Join(",", missingDomains)}");
-            }
-
-            var cookieResult = await Collection.Business.SendEvent(FetchCookieEvent.Create(missingDomains));
-            Collection.Log.LogInfo(Tag, $"OIDB 0x102a cookies fetched: {cookieResult.Count != 0} domains={missingDomains.Count}");
-            if (Collection.Config.EnableSignServerTelemetryDebug)
-            {
-                foreach (var domain in missingDomains)
+                if (Collection.Config.EnableSignServerTelemetryDebug)
                 {
-                    if (Collection.Keystore.Session.Oidb102ACookies.TryGetValue(domain, out var cache))
+                    Collection.Log.LogInfo(Tag, $"SignServer telemetry debug: sending OIDB 0x102a cookies request domains={string.Join(",", missingDomains)}");
+                }
+
+                var cookieResult = await Collection.Business.SendEvent(FetchCookieEvent.Create(missingDomains));
+                Collection.Log.LogInfo(Tag, $"OIDB 0x102a cookies fetched: {cookieResult.Count != 0} domains={missingDomains.Count}");
+                refreshedOidb102A |= cookieResult.Count != 0;
+                if (Collection.Config.EnableSignServerTelemetryDebug)
+                {
+                    foreach (var domain in missingDomains)
                     {
-                        Collection.Log.LogInfo(Tag, $"SignServer telemetry debug: OIDB 0x102a cookie domain={domain} len={cache.Cookie.Length} sha256_16={HashString(cache.Cookie)} expire_at_utc={cache.ExpireAtUtc:O}");
-                    }
-                    else
-                    {
-                        Collection.Log.LogInfo(Tag, $"SignServer telemetry debug: OIDB 0x102a cookie domain={domain} missing");
+                        if (Collection.Keystore.Session.Oidb102ACookies.TryGetValue(domain, out var cache))
+                        {
+                            Collection.Log.LogInfo(Tag, $"SignServer telemetry debug: OIDB 0x102a cookie domain={domain} len={cache.Cookie.Length} sha256_16={HashString(cache.Cookie)} expire_at_utc={cache.ExpireAtUtc:O}");
+                        }
+                        else
+                        {
+                            Collection.Log.LogInfo(Tag, $"SignServer telemetry debug: OIDB 0x102a cookie domain={domain} missing");
+                        }
                     }
                 }
             }
@@ -570,6 +562,26 @@ internal class WtExchangeLogic : LogicBase
         catch (Exception e)
         {
             Collection.Log.LogWarning(Tag, $"OIDB 0x102a cookie fetch failed: {e.Message}");
+        }
+
+        if (!forceSsoReport && refreshedOidb102A) await SendSsoReport();
+    }
+
+    private async Task SendSsoReport()
+    {
+        try
+        {
+            if (Collection.Config.EnableSignServerTelemetryDebug)
+            {
+                Collection.Log.LogInfo(Tag, "SignServer telemetry debug: sending trpc.o3.report.Report.SsoReport");
+            }
+
+            bool ssoReportSent = await Collection.Business.PushEvent(SsoReportEvent.Create());
+            Collection.Log.LogInfo(Tag, $"SsoReport Sent: {ssoReportSent}");
+        }
+        catch (Exception e)
+        {
+            Collection.Log.LogWarning(Tag, $"SsoReport send failed: {e.Message}");
         }
     }
 

@@ -623,6 +623,8 @@ public sealed class SignServerOidb102AState
 
     [JsonPropertyName("last_seq")] public uint LastSeq { get; set; }
 
+    [JsonPropertyName("last_request")] public SignServerStateHash LastRequest { get; set; } = new();
+
     [JsonPropertyName("last_response")] public SignServerStateHash LastResponse { get; set; } = new();
 
     [JsonPropertyName("client_key_response_count")] public uint ClientKeyResponseCount { get; set; }
