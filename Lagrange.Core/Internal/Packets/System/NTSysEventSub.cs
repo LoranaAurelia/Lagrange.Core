@@ -10,7 +10,7 @@ internal class NTSysEventSub
 {
     [ProtoMember(2)] public long State { get; set; }
     
-    [ProtoMember(3)] public int Field3 { get; set; }
+    [ProtoMember(3)] public long Field3 { get; set; }
     
     [ProtoMember(4)] public long Field4 { get; set; }
     
