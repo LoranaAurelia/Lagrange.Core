@@ -286,6 +286,10 @@ internal class MessagingLogic : LogicBase
             }
             case LoginNotifyEvent login:
             {
+                Collection.Log.LogInfo(Tag,
+                    $"Mobile Login Notify: state={(login.StateKnown ? login.IsLogin ? "login" : "logoff" : "unknown")} tag={login.Tag} message={login.Message}");
+                if (!login.StateKnown) break;
+
                 var deviceArgs = new DeviceLoginEvent(login.IsLogin, login.AppId, login.Tag, login.Message);
                 Collection.Invoker.PostEvent(deviceArgs);
                 break;

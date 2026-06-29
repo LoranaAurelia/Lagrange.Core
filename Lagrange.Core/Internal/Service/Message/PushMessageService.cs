@@ -289,6 +289,11 @@ internal class PushMessageService : BaseService<PushMessageEvent>
                         break;
                     }
 
+                    if (IsKnownInformationalGreyTip(greyTip))
+                    {
+                        break;
+                    }
+
                     AddUnknownGreyTipEvent(extraEvents, groupUin, msg.Message.ContentHead.SubType ?? 0, greyTip);
                 }
                 catch
@@ -364,7 +369,16 @@ internal class PushMessageService : BaseService<PushMessageEvent>
     }
 
     private static bool IsKnownGreyTip(NotifyMessageBody greyTip)
-        => greyTip.Type is 27 or 32 || greyTip.GeneralGrayTip?.BusiType == 12;
+        => greyTip.Type is 27 or 32 || greyTip.GeneralGrayTip?.BusiType == 12 || IsKnownInformationalGreyTip(greyTip);
+
+    private static bool IsKnownInformationalGreyTip(NotifyMessageBody greyTip)
+    {
+        var general = greyTip.GeneralGrayTip;
+        if (greyTip.Type != 20 || general == null) return false;
+
+        return general is { BusiType: 1, TemplId: 10485 } || // invitation/join grey tip; real event is emitted separately
+               general is { BusiType: 16, TemplId: 10478 };  // account region/security warning grey tip
+    }
 
     private static bool LooksLikeGreyTip(NotifyMessageBody greyTip)
         => greyTip.GeneralGrayTip != null || greyTip.Type is 27 or 32;
